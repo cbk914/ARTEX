@@ -7,6 +7,7 @@ Updated: 2026-11-26. Local branch: `codex/security-remediation`. Baseline: `3cb0
 - Matched local HEAD to the referenced fork's `main` at inspection time and created the local remediation branch.
 - Added Phase 0 source observations, threat model, plan and regression matrix.
 - Applied the ARTEX-Galactus display name to the README and frontend metadata. Runtime `ARTEX_*` settings, Compose service names and Go imports remain compatible.
+- Fixed strict session JWT validation in commit `089299b`, with a pre-fix reproducer and post-fix normal and race checks.
 
 ## Current state
 
