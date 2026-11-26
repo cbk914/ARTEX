@@ -237,9 +237,16 @@ func (s *Server) passwordVersionKey() string {
 	return authPwdVersionKey
 }
 
-// applyPasswordVersion records a version that was just committed.
+// applyPasswordVersion records a version that was just committed or read.
+// Concurrent rotations can finish their post-commit work out of order; an
+// older completion must not resurrect sessions from the previous password.
 func (s *Server) applyPasswordVersion(n int64) {
-	s.pwdVersion.Store(n)
+	for {
+		current := s.pwdVersion.Load()
+		if n <= current || s.pwdVersion.CompareAndSwap(current, n) {
+			break
+		}
+	}
 	s.pwdState.Store(pwdReady)
 }
 
@@ -449,7 +456,10 @@ func (s *Server) loadPasswordVersion() {
 		s.pwdState.Store(pwdUnreadable)
 		return
 	}
-	s.applyPasswordVersion(n)
+	// Startup and explicit recovery use the database as the authority, including
+	// when repairing an unreadable in-memory version.
+	s.pwdVersion.Store(n)
+	s.pwdState.Store(pwdReady)
 }
 
 // checkSetupToken compares got with the active setup token in constant time.
@@ -612,14 +622,14 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	s.login(w, r, pg.GetSetting)
+	s.login(w, r, pg.GetAuthSnapshot)
 }
 
-// login is authLogin past the data-source check; getSetting is pg.GetSetting,
+// login is authLogin past the data-source check; getSnapshot is pg.GetAuthSnapshot,
 // a parameter so tests can run it without PostgreSQL. Every attempt counts
 // against the caller's IP (s.loginLimit, keyed by clientIP) and a successful
 // one clears it. There is no per-account lockout and no password length check here.
-func (s *Server) login(w http.ResponseWriter, r *http.Request, getSetting func(string) (string, bool, error)) {
+func (s *Server) login(w http.ResponseWriter, r *http.Request, getSnapshot func(string, string) (string, bool, int64, error)) {
 	ip := clientIP(r, s.trustedProxies)
 	if wait := s.loginLimit.allow(ip); wait > 0 {
 		secs := int((wait + time.Second - 1) / time.Second)
@@ -639,7 +649,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, getSetting func(s
 		writeErr(w, 401, "Incorrect username or password")
 		return
 	}
-	hash, ok, err := getSetting(s.passwordHashKey())
+	hash, ok, version, err := getSnapshot(s.passwordHashKey(), s.passwordVersionKey())
 	if err != nil {
 		writeErr(w, 503, errDataSourceUnavailable)
 		return
@@ -660,7 +670,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, getSetting func(s
 		writeErr(w, 503, errDataSourceUnavailable)
 		return
 	}
-	tok, err := signJWTVersion(s.jwtKey, s.pwdVersion.Load())
+	s.applyPasswordVersion(version)
+	// Sign only the version read with this hash. A concurrent password rotation
+	// may invalidate this token, but cannot make old credentials current.
+	tok, err := signJWTVersion(s.jwtKey, version)
 	if err != nil {
 		writeErr(w, 500, "token generation failed")
 		return

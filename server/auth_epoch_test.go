@@ -139,8 +139,16 @@ func TestChangePasswordRevokesOldTokenAndKeepsItWhenSaveFails(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	s.authLogin(w, httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"username":"ARTEX","password":"correct-horse-2"}`)))
+	if w.Code != 503 {
+		t.Fatalf("login with corrupt password version: status=%d want 503 body=%s", w.Code, w.Body.String())
+	}
+	if _, err := m.pg.Exec(`UPDATE settings SET value=$1 WHERE key=$2`, fmt.Sprint(before), s.authVersionKey); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	s.authLogin(w, httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"username":"ARTEX","password":"correct-horse-2"}`)))
 	if w.Code != 200 {
-		t.Fatalf("old password after a failed save: status=%d body=%s", w.Code, w.Body.String())
+		t.Fatalf("old password after repairing the failed-save fixture: status=%d body=%s", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
 	s.authLogin(w, httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"username":"ARTEX","password":"correct-horse-3"}`)))

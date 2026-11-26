@@ -30,11 +30,11 @@ func loginServer(t *testing.T, clk *fakeClock) (*Server, func(remote, password s
 	if err != nil {
 		t.Fatal(err)
 	}
-	getSetting := func(key string) (string, bool, error) {
-		if key != authPassKey {
-			return "", false, nil
+	getSnapshot := func(hashKey, versionKey string) (string, bool, int64, error) {
+		if hashKey != authPassKey || versionKey != authPwdVersionKey {
+			return "", false, 0, nil
 		}
-		return string(hash), true, nil
+		return string(hash), true, 0, nil
 	}
 	s := &Server{jwtKey: []byte("0123456789abcdef0123456789abcdef"), loginLimit: newLoginLimiter(clk.now), pwdLimit: newLoginLimiter(clk.now)}
 	post := func(remote, password string, hdr map[string]string) *httptest.ResponseRecorder {
@@ -45,7 +45,7 @@ func loginServer(t *testing.T, clk *fakeClock) (*Server, func(remote, password s
 			r.Header.Set(k, v)
 		}
 		w := httptest.NewRecorder()
-		s.login(w, r, getSetting)
+		s.login(w, r, getSnapshot)
 		return w
 	}
 	return s, post

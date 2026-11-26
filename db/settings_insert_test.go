@@ -94,3 +94,38 @@ func TestRotatePasswordRollsBackHashWhenVersionCannotIncrement(t *testing.T) {
 		t.Fatalf("second version=%d want 2", n)
 	}
 }
+
+func TestGetAuthSnapshotPairsHashAndVersion(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		SkipPGUnavailable(t, err)
+	}
+	defer d.Close()
+	stamp := time.Now().UnixNano()
+	hashKey := fmt.Sprintf("test.auth_snapshot_hash.%d", stamp)
+	versionKey := fmt.Sprintf("test.auth_snapshot_version.%d", stamp)
+	defer func() {
+		_, _ = d.Exec(`DELETE FROM settings WHERE key=$1 OR key=$2`, hashKey, versionKey)
+	}()
+	if hash, found, version, err := d.GetAuthSnapshot(hashKey, versionKey); err != nil || found || hash != "" || version != 0 {
+		t.Fatalf("missing snapshot: hash=%q found=%v version=%d err=%v", hash, found, version, err)
+	}
+	if err := d.SetSetting(hashKey, "old-hash"); err != nil {
+		t.Fatal(err)
+	}
+	if hash, found, version, err := d.GetAuthSnapshot(hashKey, versionKey); err != nil || !found || hash != "old-hash" || version != 0 {
+		t.Fatalf("legacy snapshot: hash=%q found=%v version=%d err=%v", hash, found, version, err)
+	}
+	if _, err := d.RotatePassword(hashKey, "new-hash", versionKey); err != nil {
+		t.Fatal(err)
+	}
+	if hash, found, version, err := d.GetAuthSnapshot(hashKey, versionKey); err != nil || !found || hash != "new-hash" || version != 1 {
+		t.Fatalf("rotated snapshot: hash=%q found=%v version=%d err=%v", hash, found, version, err)
+	}
+	if err := d.SetSetting(versionKey, "invalid"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := d.GetAuthSnapshot(hashKey, versionKey); err == nil {
+		t.Fatal("accepted an invalid password version")
+	}
+}

@@ -2,8 +2,31 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"strconv"
 )
+
+// GetAuthSnapshot reads the password hash and its version from one PostgreSQL
+// statement, so a concurrent rotation cannot pair an old hash with a new
+// version. A missing version is the legacy version zero.
+func (d *DB) GetAuthSnapshot(hashKey, versionKey string) (hash string, found bool, version int64, err error) {
+	var raw sql.NullString
+	err = d.QueryRow(`SELECT h.value, v.value FROM settings h
+LEFT JOIN settings v ON v.key=$2 WHERE h.key=$1`, hashKey, versionKey).Scan(&hash, &raw)
+	if err == sql.ErrNoRows {
+		return "", false, 0, nil
+	}
+	if err != nil {
+		return "", false, 0, err
+	}
+	if raw.Valid {
+		version, err = strconv.ParseInt(raw.String, 10, 64)
+		if err != nil || version < 0 {
+			return "", false, 0, fmt.Errorf("invalid password version")
+		}
+	}
+	return hash, true, version, nil
+}
 
 // Settings is a tiny key-value store for global app config the UI toggles at
 // runtime (e.g. traffic_capture). Missing keys fall back to caller defaults.
