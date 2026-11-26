@@ -15,9 +15,10 @@ import (
 )
 
 // Workspace file manager — browse / view / edit / download / upload / delete the
-// shared work dir (s.m.dir), where all agents write their artifacts. Every path is
-// confined to the work dir root (traversal via ".." is neutralised). All routes sit
-// behind requireAuth (see Handler()).
+// shared work dir (s.m.dir), where agents write their artifacts. Path validation
+// rejects traversal; list/read/download also open through an os.Root. The
+// remaining write and delete paths need the same descriptor confinement and an
+// explicit allowed-root policy. All routes sit behind requireAuth (Handler()).
 
 const (
 	maxWorkspaceRead   = 2 << 20   // 2 MiB: files bigger than this aren't inlined for view/edit (download instead)
@@ -121,16 +122,22 @@ func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	abs := cp.realPath
-	fi, err := os.Stat(abs)
+	dir, err := openWorkspaceResolved(cp)
 	if err != nil {
 		writeErr(w, 404, "path does not exist")
+		return
+	}
+	defer dir.Close()
+	fi, err := dir.Stat()
+	if err != nil {
+		writeErr(w, 500, safeFSErr(err))
 		return
 	}
 	if !fi.IsDir() {
 		writeErr(w, 400, "not a directory")
 		return
 	}
-	ents, err := os.ReadDir(abs)
+	ents, err := dir.ReadDir(-1)
 	if err != nil {
 		writeErr(w, 500, safeFSErr(err))
 		return
@@ -161,6 +168,19 @@ func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/workspace/read?path=<rel> — inline text for view/edit. Binary or oversize
 // files return {binary:true}/{too_large:true} with no content (use download instead).
+func openWorkspaceResolved(cp confinedPath) (*os.File, error) {
+	rel, err := filepath.Rel(cp.realRoot, cp.realPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return nil, errPathEscape
+	}
+	root, err := os.OpenRoot(cp.realRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return openWorkspaceCandidate(root, rel)
+}
+
 func (s *Server) wsRead(w http.ResponseWriter, r *http.Request) {
 	cp, ok := s.wsResolveConfined(r.URL.Query().Get("path"))
 	if !ok {
@@ -168,22 +188,36 @@ func (s *Server) wsRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	abs := cp.realPath
-	fi, err := os.Stat(abs)
+	f, err := openWorkspaceResolved(cp)
 	if err != nil {
 		writeErr(w, 404, "file does not exist")
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		writeErr(w, 500, safeFSErr(err))
 		return
 	}
 	if fi.IsDir() {
 		writeErr(w, 400, "is a directory, cannot be read as a file")
 		return
 	}
+	if !fi.Mode().IsRegular() {
+		writeErr(w, 400, "not a regular file")
+		return
+	}
 	if fi.Size() > maxWorkspaceRead {
 		writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "too_large": true, "binary": true})
 		return
 	}
-	data, err := os.ReadFile(abs)
+	data, err := io.ReadAll(io.LimitReader(f, maxWorkspaceRead+1))
 	if err != nil {
 		writeErr(w, 500, safeFSErr(err))
+		return
+	}
+	if len(data) > maxWorkspaceRead {
+		writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "too_large": true, "binary": true})
 		return
 	}
 	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
@@ -282,16 +316,21 @@ func (s *Server) wsDownload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid path")
 		return
 	}
-	abs := cp.realPath
-	fi, err := os.Stat(abs)
-	if err != nil || fi.IsDir() {
+	f, err := openWorkspaceResolved(cp)
+	if err != nil {
+		writeErr(w, 404, "file does not exist")
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
 		writeErr(w, 404, "file does not exist")
 		return
 	}
 	name := filepath.Base(cp.entryPath)
 	// RFC 5987 filename* keeps non-ASCII names intact; plain filename is the fallback.
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+sanitizeFilename(name)+"\"; filename*=UTF-8''"+url.PathEscape(name))
-	http.ServeFile(w, r, abs)
+	http.ServeContent(w, r, name, fi.ModTime(), f)
 }
 
 // POST /api/workspace/upload?path=<dir> — multipart form field "file" (one or more).
