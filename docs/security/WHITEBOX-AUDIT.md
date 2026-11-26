@@ -24,4 +24,4 @@ The boundaries to verify are browser/API, server/PostgreSQL and keys, untrusted 
 
 `go.mod` requires Go 1.26.11; installed Go is 1.20.2. `GOTOOLCHAIN=local go test ./...` failed parsing `go.mod` before tests ran. With permitted read-only Docker access, the application and PostgreSQL containers were running, PostgreSQL reported healthy, and named volumes `artex_artex_data`, `artex_artex_keys`, `artex_artex_skills` and `artex_pgdata` were listed. No container or volume was changed. Git requires a temporary mapped drive for work-tree commands on this UNC checkout. Status then showed three previously deleted PoC scripts under `scripts/poc/php2shell/poc/`; they were left untouched. No frontend, PostgreSQL-backed or race tests have run.
 
-ARTEX-001 through ARTEX-013 remain **PENDING VALIDATION**. These observations set priorities but do not establish reproducibility or a fix.
+ARTEX-001 through ARTEX-013 were **PENDING VALIDATION** at the initial baseline. ARTEX-012 was subsequently reproduced and fixed locally; see `REGRESSION-MATRIX.md`. The other findings remain pending.

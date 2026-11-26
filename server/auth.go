@@ -175,7 +175,7 @@ func samePath(a, b string) bool {
 // Two changes in the same second get different versions, so a cutoff based on
 // the issued-at second cannot leave the older token valid.
 type sessionClaims struct {
-	Pwd int64 `json:"pwd"`
+	Pwd *int64 `json:"pwd"`
 	jwt.RegisteredClaims
 }
 
@@ -187,7 +187,7 @@ func signJWT(key []byte) (string, error) {
 // signJWTVersion issues a 7-day HS256 token bound to a password version.
 func signJWTVersion(key []byte, version int64) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, sessionClaims{
-		Pwd: version,
+		Pwd: &version,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   "ARTEX",
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(jwtTTL)),
@@ -196,24 +196,21 @@ func signJWTVersion(key []byte, version int64) (string, error) {
 	}).SignedString(key)
 }
 
-// verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
-// version 0 means no password change is stored yet, and any valid token is
-// accepted. A later version requires the token's pwd claim to equal it.
-func verifyJWT(tokenStr string, key []byte, version int64) bool {
+// parseSessionClaims applies the same token constraints for authorization and
+// approver attribution. A missing pwd claim is distinct from version zero.
+func parseSessionClaims(tokenStr string, key []byte) (*sessionClaims, bool) {
 	claims := &sessionClaims{}
-	t, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
-		}
+	t, err := jwt.ParseWithClaims(tokenStr, claims, func(*jwt.Token) (any, error) {
 		return key, nil
-	})
-	if err != nil || !t.Valid {
-		return false
-	}
-	if version > 0 && claims.Pwd != version {
-		return false
-	}
-	return true
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithExpirationRequired(), jwt.WithSubject("ARTEX"))
+	return claims, err == nil && t.Valid && claims.Pwd != nil
+}
+
+// verifyJWT accepts only a current-version ARTEX session with all required claims.
+func verifyJWT(tokenStr string, key []byte, version int64) bool {
+	claims, ok := parseSessionClaims(tokenStr, key)
+	return ok && version >= 0 && *claims.Pwd == version
 }
 
 // sessionOK reports whether token is still a session for the password version
@@ -246,17 +243,10 @@ func (s *Server) applyPasswordVersion(n int64) {
 	s.pwdState.Store(pwdReady)
 }
 
-// jwtSubject returns the subject of tokenStr when it is a valid, non-expired
-// HS256 token, and "" otherwise.
+// jwtSubject returns the subject of a valid ARTEX session, and "" otherwise.
 func jwtSubject(tokenStr string, key []byte) string {
-	var claims jwt.RegisteredClaims
-	t, err := jwt.ParseWithClaims(tokenStr, &claims, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
-		}
-		return key, nil
-	})
-	if err != nil || !t.Valid {
+	claims, ok := parseSessionClaims(tokenStr, key)
+	if !ok {
 		return ""
 	}
 	return claims.Subject
