@@ -10,7 +10,7 @@ Updated: 2026-11-26. Local branch: `codex/security-remediation`. Baseline: `3cb0
 - Fixed strict session JWT validation in commit `089299b`, with a pre-fix reproducer and post-fix normal and race checks.
 - Confirmed ARTEX-011 with a failing barrier-controlled pre-fix test. Implemented an atomic hash/version read and monotonic post-commit version updates in commit `deece11`; focused PostgreSQL-backed normal and race tests and the full post-fix Go suite pass.
 - Confirmed the ARTEX-003 duplicate-name race with a failing pre-fix regression. Partial mitigation commit `22bf3f2` uses a run-directory `os.Root`, exclusive file creation, bounded copying, cancellation checks and incomplete-file cleanup; focused normal/race, 512 MiB boundary and full PostgreSQL-backed Go tests pass. Protected staging and immutable metadata remain open.
-- Confirmed ARTEX-002's check/open race with a failing deterministic parent-swap read regression. A local partial change confines list, read and download through `os.Root`; focused normal/race, FIFO, HTTP range, vet, Windows compile and full PostgreSQL-backed Go checks pass. Write, mkdir, upload, delete and explicit allowed roots remain open.
+- Confirmed ARTEX-002's check/open race with a failing deterministic parent-swap read regression. Partial mitigation commit `ba9f398` confines list, read and download through `os.Root`; focused normal/race, FIFO, HTTP range, vet, Windows compile and full PostgreSQL-backed Go checks pass. Write, mkdir, upload, delete and explicit allowed roots remain open.
 
 ## Current state
 
@@ -26,6 +26,7 @@ Batch B is in progress. ARTEX-011 and ARTEX-012 are confirmed and fixed locally;
 - A separate network-disconnected, disposable Go 1.26.11 container reproduced the ARTEX-003 name collision before the change and passed focused normal, race and 512 MiB upload boundary tests afterward. After connecting it only to a disposable internal PostgreSQL 16 database, the full Go suite passed. An initial full attempt failed before executing tests because the disposable launcher contained a PowerShell carriage return; the corrected launcher and same suite passed.
 - The phase-B Go and PostgreSQL test containers and their internal network were removed after the full run; Docker inspection showed no operational volume mounts.
 - A new isolated Go 1.26.11 container reproduced the ARTEX-002 parent-swap read before the fix. Focused post-fix read/list/download, FIFO, HTTP range and race tests passed; `go vet ./server`, Windows cross-compilation and the full PostgreSQL-backed Go suite passed.
+- The workspace Go and PostgreSQL test containers and their internal network were removed after the full run; inspection showed no operational volume mounts.
 
 ## Next steps and rollback
 
