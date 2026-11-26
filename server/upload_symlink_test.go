@@ -65,11 +65,17 @@ func TestUniqueUploadPathSkipsDanglingSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "nonexistent"), dangling); err != nil {
 		t.Skipf("symlink: %v", err)
 	}
-	got, err := uniqueUploadPath(dir, "note.txt")
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(got) != "note-1.txt" {
+	defer root.Close()
+	f, got, err := createUniqueChatFile(root, "note.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if got != "note-1.txt" {
 		t.Fatalf("got %s, want note-1.txt", got)
 	}
 }

@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,9 +24,7 @@ const (
 	// Allow multipart headers and boundaries in addition to the file data.
 	chatUploadMultipartOverhead = 1 << 20 // 1 MiB
 	chatUploadLimitMessage      = "files exceed the 512 MiB upload limit"
-	// maxUploadNameTries bounds the name-1, name-2, … search. A Stat error that
-	// is not "not exist" (a component the filesystem rejects) must stop the
-	// search instead of spinning.
+	// maxUploadNameTries bounds the name-1, name-2, … exclusive-create search.
 	maxUploadNameTries = 10000
 )
 
@@ -92,11 +93,37 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 	} else if sub == "sessions" {
 		base = agent.EnsureSessionDir(s.m.dir, id)
 	}
+	if sub == "drafts" {
+		dataRoot, err := os.OpenRoot(s.m.dir)
+		if err != nil {
+			writeErr(w, 500, "failed to open upload root")
+			return
+		}
+		defer dataRoot.Close()
+		if err := dataRoot.MkdirAll(filepath.Join(sub, id), 0o755); err != nil {
+			writeErr(w, 500, "failed to create staging directory")
+			return
+		}
+	}
 	dir := filepath.Join(base, "uploads")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// The run directory is the smallest trusted root. A link inside uploads
+	// cannot lead to a sibling campaign, even if it stays under the data dir.
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		writeErr(w, 500, "failed to open upload root")
+		return
+	}
+	defer root.Close()
+	if err := root.MkdirAll("uploads", 0o755); err != nil {
 		writeErr(w, 500, "failed to create directory: "+err.Error())
 		return
 	}
+	uploadDir, err := root.OpenRoot("uploads")
+	if err != nil {
+		writeErr(w, 500, "failed to open upload directory")
+		return
+	}
+	defer uploadDir.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, maxChatUpload+chatUploadMultipartOverhead)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		var sizeErr *http.MaxBytesError
@@ -127,51 +154,104 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 			continue
 		}
-		dest, err := uniqueUploadPath(dir, name)
+		savedName, err := saveChatUpload(uploadDir, hdr, name, r.Context())
 		if err != nil {
 			writeErr(w, 500, "Save failed: "+err.Error())
 			return
 		}
-		if err := saveUpload(hdr, dest); err != nil {
-			writeErr(w, 500, "Save failed: "+err.Error())
-			return
-		}
-		base := filepath.Base(dest)
-		out = append(out, chatAttachment{Name: base, Path: "uploads/" + base, Size: hdr.Size, Abs: dest})
+		out = append(out, chatAttachment{Name: savedName, Path: "uploads/" + savedName, Size: hdr.Size, Abs: filepath.Join(dir, savedName)})
 	}
 	writeJSON(w, 200, map[string]any{"attachments": out})
 }
 
-// uniqueUploadPath returns dir/name, or dir/name-1, dir/name-2… when it already exists,
-// so re-uploading the same filename never clobbers a prior attachment.
-func uniqueUploadPath(dir, name string) (string, error) {
-	if dest, ok, err := uploadPathFree(filepath.Join(dir, name)); err != nil || ok {
-		return dest, err
+// createUniqueChatFile reserves a name and opens it in one confined operation.
+// An existing file, link or concurrent creator causes a suffix retry.
+func createUniqueChatFile(dir *os.Root, name string) (*os.File, string, error) {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsAny(name, `/\`) {
+		return nil, "", fmt.Errorf("invalid upload name")
+	}
+	open := func(candidate string) (*os.File, error) {
+		return dir.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	}
+	if f, err := open(name); err == nil {
+		return f, name, nil
+	} else if !errors.Is(err, os.ErrExist) {
+		return nil, "", err
 	}
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
 	for i := 1; i <= maxUploadNameTries; i++ {
-		cand := filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
-		dest, ok, err := uploadPathFree(cand)
-		if err != nil || ok {
-			return dest, err
+		candidate := fmt.Sprintf("%s-%d%s", stem, i, ext)
+		if f, err := open(candidate); err == nil {
+			return f, candidate, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return nil, "", err
 		}
 	}
-	return "", fmt.Errorf("no free name for upload %q", name)
+	return nil, "", fmt.Errorf("no free name for upload %q", name)
 }
 
-// uploadPathFree reports whether path can be created. ok is false when a file
-// or a symlink (including a dangling one) is already there. Any other Lstat
-// error is returned so the caller stops.
-func uploadPathFree(path string) (dest string, ok bool, err error) {
-	_, err = os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return path, true, nil
+// saveChatUpload rejects incomplete or cancelled copies and removes the name
+// through the same directory descriptor. Header Size comes from multipart
+// parsing, and the request body and aggregate sizes are bounded above.
+func saveChatUpload(dir *os.Root, hdr *multipart.FileHeader, name string, ctx context.Context) (string, error) {
+	if hdr.Size < 0 || hdr.Size > maxChatUpload {
+		return "", fmt.Errorf("upload exceeds size limit")
 	}
+	src, err := hdr.Open()
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
-	return "", false, nil
+	defer src.Close()
+	out, savedName, err := createUniqueChatFile(dir, name)
+	if err != nil {
+		return "", err
+	}
+	complete := false
+	defer func() {
+		_ = out.Close()
+		if !complete {
+			_ = dir.Remove(savedName)
+		}
+	}()
+	buf := make([]byte, 32<<10)
+	var written int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			if written+int64(n) > hdr.Size || written+int64(n) > maxChatUpload {
+				return "", fmt.Errorf("upload exceeds declared size")
+			}
+			nw, err := out.Write(buf[:n])
+			written += int64(nw)
+			if err != nil {
+				return "", err
+			}
+			if nw != n {
+				return "", io.ErrShortWrite
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+	}
+	if written != hdr.Size {
+		return "", fmt.Errorf("incomplete upload")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		return "", err
+	}
+	complete = true
+	return savedName, nil
 }
 
 // composeAgentMessage appends an attachment manifest to the user's message so the agent
