@@ -8,6 +8,8 @@ Date: 2026-11-26. Baseline: `3cb06383fd99ffe7686abe1d375de11da7cfad54`, matching
 
 The boundaries to verify are browser/API, server/PostgreSQL and keys, untrusted content/model, model/server tools, server/executor, campaign/campaign, and executor/network.
 
+Detailed inventories: [HTTP routes](HTTP-ROUTES.md), [direct server filesystem sites](FILESYSTEM-SITES.md), [process and secret boundaries](PROCESS-AND-SECRETS.md), and [CI and deployment](CI-AND-DEPLOYMENT.md).
+
 ## Initial inventory
 
 | Surface | Source | Initial observation |
@@ -24,4 +26,4 @@ The boundaries to verify are browser/API, server/PostgreSQL and keys, untrusted 
 
 `go.mod` requires Go 1.26.11; installed Go is 1.20.2. `GOTOOLCHAIN=local go test ./...` failed parsing `go.mod` before tests ran. With permitted read-only Docker access, the application and PostgreSQL containers were running, PostgreSQL reported healthy, and named volumes `artex_artex_data`, `artex_artex_keys`, `artex_artex_skills` and `artex_pgdata` were listed. No container or volume was changed. Git requires a temporary mapped drive for work-tree commands on this UNC checkout. Status then showed three previously deleted PoC scripts under `scripts/poc/php2shell/poc/`; they were left untouched. No frontend, PostgreSQL-backed or race tests have run.
 
-ARTEX-001 through ARTEX-013 were **PENDING VALIDATION** at the initial baseline. ARTEX-012 was subsequently reproduced and fixed locally; see `REGRESSION-MATRIX.md`. The other findings remain pending.
+ARTEX-001 through ARTEX-013 were **PENDING VALIDATION** at the initial baseline. ARTEX-012 was subsequently reproduced and fixed locally; see `REGRESSION-MATRIX.md`. The other findings remain pending. `SECURITY.md` already acknowledges shared executor and path-based privileged operation limitations; its statements must be reconciled with each completed remediation batch.
