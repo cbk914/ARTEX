@@ -1,10 +1,12 @@
 <div align="center">
 
-<img src="web/public/logo.svg" width="84" alt="ARTEX logo" />
+<img src="web/public/logo.svg" width="84" alt="ARTEX-Galactus logo" />
 
-# ARTEX
+# ARTEX-Galactus
 
 **Autonomous penetration testing that keeps its receipts.**
+
+This is [the ARTEX-Galactus fork](https://github.com/cbk914/ARTEX) of [BaaRai/ARTEX](https://github.com/BaaRai/ARTEX). The security remediation described in [the remediation plan](docs/security/REMEDIATION-PLAN.md) is in progress; the name does not imply that the listed findings have been fixed. Existing `ARTEX_*` settings, service names and Go import paths remain in place for compatibility.
 
 
 Self-hosted multi-agent offensive security. A planner explores, workers run real tools,
