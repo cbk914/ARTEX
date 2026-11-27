@@ -25,7 +25,28 @@ const (
 	chatUploadLimitMessage      = "files exceed the 512 MiB upload limit"
 	// maxUploadNameTries bounds the name-1, name-2, … exclusive-create search.
 	maxUploadNameTries = 10000
+	// Each admitted request may spool up to maxChatUpload plus multipart overhead.
+	// Keep the process-wide parser concurrency bounded even if the operational
+	// setting is misconfigured.
+	defaultChatUploadConcurrency = 4
+	maxChatUploadConcurrency     = 16
 )
+
+func (s *Server) acquireChatUploadSlot() bool {
+	s.chatUploadOnce.Do(func() {
+		limit := defaultChatUploadConcurrency
+		if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ARTEX_CHAT_UPLOAD_CONCURRENCY"))); err == nil && n >= 1 && n <= maxChatUploadConcurrency {
+			limit = n
+		}
+		s.chatUploadSlots = make(chan struct{}, limit)
+	})
+	select {
+	case s.chatUploadSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
 
 // safeChatID guards the {id} path segment against traversal — task ids are numeric,
 // session ids are alnum/_/- ; anything with "/" or ".." is rejected.
@@ -77,6 +98,12 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid id")
 		return
 	}
+	if !s.acquireChatUploadSlot() {
+		w.Header().Set("Retry-After", "1")
+		writeErr(w, http.StatusTooManyRequests, "too many concurrent uploads; retry shortly")
+		return
+	}
+	defer func() { <-s.chatUploadSlots }()
 	base := filepath.Join(s.m.dir, sub, id) // the directory uploads/ goes in
 	if taskScoped {
 		t := s.m.ResolveTask(id)

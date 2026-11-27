@@ -167,6 +167,8 @@ type Server struct {
 	archiveStore    *archivestore.Store
 	archiveStoreErr error
 	side            *sideQuestionState
+	chatUploadOnce  sync.Once
+	chatUploadSlots chan struct{}
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.
