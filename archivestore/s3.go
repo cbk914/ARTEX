@@ -163,6 +163,20 @@ func (s *Store) Validate(uri string) error { _, err := s.key(uri); return err }
 // multipart uploads whose ETag is not a checksum. Callers retain source data
 // until verification succeeds and PostgreSQL commits the remote location.
 func (s *Store) Upload(ctx context.Context, uri, filename, checksum string) error {
+	f, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return s.UploadOpened(ctx, uri, f, checksum)
+}
+
+// UploadOpened uses an already confined descriptor supplied by the archive
+// controller. It never resolves the source path again during the transfer.
+func (s *Store) UploadOpened(ctx context.Context, uri string, f *os.File, checksum string) error {
+	if f == nil {
+		return errors.New("archive source is required")
+	}
 	key, err := s.key(uri)
 	if err != nil {
 		return err
@@ -170,13 +184,14 @@ func (s *Store) Upload(ctx context.Context, uri, filename, checksum string) erro
 	if decoded, err := hex.DecodeString(checksum); err != nil || len(decoded) != sha256.Size {
 		return errors.New("invalid archive SHA-256")
 	}
-	f, err := os.Open(filename)
+	info, err := f.Stat()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
+	if !info.Mode().IsRegular() {
+		return errors.New("archive source is not a regular file")
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
 	uploader := manager.NewUploader(s.client, func(u *manager.Uploader) {

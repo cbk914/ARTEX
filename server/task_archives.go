@@ -269,7 +269,13 @@ func (s *Server) archiveTask(ctx context.Context, job *pgdb.TaskArchive) (runErr
 			return err
 		}
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "upload_and_verify", 65)
-		if err := s.archiveStore.Upload(ctx, storedPath, archivePath, checksum); err != nil {
+		packageFile, err := openLocalTaskArchivePackage(s.m.dir, archivePath)
+		if err != nil {
+			return err
+		}
+		uploadErr := s.archiveStore.UploadOpened(ctx, storedPath, packageFile, checksum)
+		closeErr := packageFile.Close()
+		if err := errors.Join(uploadErr, closeErr); err != nil {
 			return err
 		}
 	}
@@ -365,8 +371,20 @@ func (s *Server) restoreTaskArchive(ctx context.Context, job *pgdb.TaskArchive) 
 			return err
 		}
 	}
-	if err := extractTaskArchivePackageContext(ctx, packagePath, job.SHA256, extracted); err != nil {
-		return err
+	if strings.HasPrefix(job.ArchivePath, "s3://") {
+		if err := extractTaskArchivePackageContext(ctx, packagePath, job.SHA256, extracted); err != nil {
+			return err
+		}
+	} else {
+		packageFile, err := openLocalTaskArchivePackage(s.m.dir, packagePath)
+		if err != nil {
+			return err
+		}
+		extractErr := extractTaskArchiveOpenedContext(ctx, packageFile, job.SHA256, extracted)
+		closeErr := packageFile.Close()
+		if err := errors.Join(extractErr, closeErr); err != nil {
+			return err
+		}
 	}
 	manifestRaw, err := os.ReadFile(filepath.Join(extracted, "manifest.json"))
 	if err != nil {

@@ -787,18 +787,30 @@ func extractTaskArchivePackageContext(ctx context.Context, path, expectedSHA, de
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	budget, err := configuredArchiveBudget()
-	if err != nil {
-		return err
-	}
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+	return extractTaskArchiveOpenedContext(ctx, file, expectedSHA, destination)
+}
+
+// extractTaskArchiveOpenedContext keeps verification and extraction on the same
+// descriptor. The caller confines a stored local package before opening it.
+func extractTaskArchiveOpenedContext(ctx context.Context, file *os.File, expectedSHA, destination string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	budget, err := configuredArchiveBudget()
+	if err != nil {
+		return err
+	}
 	fileInfo, err := file.Stat()
 	if err != nil {
 		return err
+	}
+	if !fileInfo.Mode().IsRegular() {
+		return errors.New("task archive package is not a regular file")
 	}
 	if fileInfo.Size() > budget.compressed {
 		return errArchiveBudget

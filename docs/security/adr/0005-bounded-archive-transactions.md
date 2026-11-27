@@ -77,6 +77,12 @@ with a fixed 4 GiB ceiling. A rejected export leaves the prior manifest in
 place. One SQLite row is still fetched and JSON encoded in memory after a
 body-size preflight; metadata and legacy reads retain bounded allocations.
 Blob hashes remain in a deduplicated set until the manifest is finalized.
+Local restoration and S3 upload now open a stored package through the private
+archive directory with `os.Root`, reject linked components and a substituted
+final file, and retain the descriptor through checksum verification and
+consumption. This closes the name-based reopen on those active paths. It does
+not prevent a writer with access to the private directory from mutating the
+opened inode or prove a transaction-wide generation match to PostgreSQL.
 Claimed jobs now use a configurable 240-minute default deadline with a hard
 1440-minute ceiling. The job context reaches package copy/extraction, traffic
 export/import, remote storage operations and PostgreSQL snapshot, compaction,
