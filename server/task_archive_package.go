@@ -2,6 +2,7 @@ package server
 
 import (
 	"archive/tar"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -575,6 +576,25 @@ func stageTaskArchivePackageDelete(archivePath string, archiveID int64) (string,
 }
 
 func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchiveSnapshot) (originalSize, compressedSize int64, checksum string, err error) {
+	return writeTaskArchivePackageContext(context.Background(), path, payloadDir, snapshot)
+}
+
+type archiveContextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r archiveContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+
+func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string, snapshot *pgdb.TaskArchiveSnapshot) (originalSize, compressedSize int64, checksum string, err error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, "", err
+	}
 	if snapshot == nil {
 		return 0, 0, "", errors.New("nil task archive snapshot")
 	}
@@ -604,10 +624,14 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 		return 0, 0, "", err
 	}
 	committed := false
+	published := false
 	defer func() {
 		_ = file.Close()
 		if !committed {
 			_ = os.Remove(temporary)
+			if published {
+				_ = os.Remove(path)
+			}
 		}
 	}()
 	hasher := sha256.New()
@@ -621,6 +645,9 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 	}
 	tarWriter := tar.NewWriter(encoder)
 	walkErr := filepath.WalkDir(payloadDir, func(current string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -661,9 +688,9 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 		if err != nil {
 			return err
 		}
-		_, copyErr := io.Copy(tarWriter, input)
+		_, copyErr := io.CopyN(tarWriter, archiveContextReader{ctx: ctx, r: input}, info.Size())
 		closeErr := input.Close()
-		return errors.Join(copyErr, closeErr)
+		return errors.Join(copyErr, closeErr, ctx.Err())
 	})
 	if walkErr != nil {
 		_ = tarWriter.Close()
@@ -675,6 +702,9 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 		return 0, 0, "", err
 	}
 	if err := encoder.Close(); err != nil {
+		return 0, 0, "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return 0, 0, "", err
 	}
 	if err := file.Sync(); err != nil {
@@ -689,10 +719,17 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 	}
 	compressedSize = stat.Size()
 	checksum = hex.EncodeToString(hasher.Sum(nil))
+	if err := ctx.Err(); err != nil {
+		return 0, 0, "", err
+	}
 	if err := os.Rename(temporary, path); err != nil {
 		return 0, 0, "", err
 	}
+	published = true
 	if err := os.Chmod(path, archiveFileMode); err != nil {
+		return 0, 0, "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return 0, 0, "", err
 	}
 	committed = true
@@ -700,6 +737,13 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 }
 
 func extractTaskArchivePackage(path, expectedSHA, destination string) error {
+	return extractTaskArchivePackageContext(context.Background(), path, expectedSHA, destination)
+}
+
+func extractTaskArchivePackageContext(ctx context.Context, path, expectedSHA, destination string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -707,7 +751,7 @@ func extractTaskArchivePackage(path, expectedSHA, destination string) error {
 	defer file.Close()
 	if expectedSHA != "" {
 		hasher := sha256.New()
-		if _, err := io.Copy(hasher, file); err != nil {
+		if _, err := io.Copy(hasher, archiveContextReader{ctx: ctx, r: file}); err != nil {
 			return err
 		}
 		if hex.EncodeToString(hasher.Sum(nil)) != strings.ToLower(expectedSHA) {
@@ -717,7 +761,7 @@ func extractTaskArchivePackage(path, expectedSHA, destination string) error {
 			return err
 		}
 	}
-	decoder, err := zstd.NewReader(file, zstd.WithDecoderMaxMemory(64<<20))
+	decoder, err := zstd.NewReader(archiveContextReader{ctx: ctx, r: file}, zstd.WithDecoderMaxMemory(64<<20))
 	if err != nil {
 		return err
 	}
@@ -729,6 +773,9 @@ func extractTaskArchivePackage(path, expectedSHA, destination string) error {
 	var entries int
 	var total int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		header, err := tarReader.Next()
 		if errors.Is(err, io.EOF) {
 			break
@@ -762,9 +809,9 @@ func extractTaskArchivePackage(path, expectedSHA, destination string) error {
 			if err != nil {
 				return err
 			}
-			_, copyErr := io.CopyN(output, tarReader, header.Size)
+			_, copyErr := io.CopyN(output, archiveContextReader{ctx: ctx, r: tarReader}, header.Size)
 			closeErr := output.Close()
-			if err := errors.Join(copyErr, closeErr); err != nil {
+			if err := errors.Join(copyErr, closeErr, ctx.Err()); err != nil {
 				return err
 			}
 		default:

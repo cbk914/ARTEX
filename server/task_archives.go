@@ -229,7 +229,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		return err
 	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "compress", 50)
-	originalSize, compressedSize, checksum, err := writeTaskArchivePackage(archivePath, fileStage.payload, snapshot)
+	originalSize, compressedSize, checksum, err := writeTaskArchivePackageContext(s.ctx, archivePath, fileStage.payload, snapshot)
 	if err != nil {
 		return err
 	}
@@ -336,7 +336,7 @@ func (s *Server) restoreTaskArchive(job *pgdb.TaskArchive) (runErr error) {
 			return err
 		}
 	}
-	if err := extractTaskArchivePackage(packagePath, job.SHA256, extracted); err != nil {
+	if err := extractTaskArchivePackageContext(s.ctx, packagePath, job.SHA256, extracted); err != nil {
 		return err
 	}
 	manifestRaw, err := os.ReadFile(filepath.Join(extracted, "manifest.json"))

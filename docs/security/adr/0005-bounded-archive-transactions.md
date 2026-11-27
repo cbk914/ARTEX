@@ -13,9 +13,11 @@ the package checksum, extracts into a temporary directory and uses a restore
 journal. Existing round-trip, path-traversal, symlink, interrupted-stage and
 remote-journal tests exercise parts of this design.
 
-The package writer and extractor have no `context.Context` or operation
-deadline. Their disk reads, zstd work and writes can continue after a queued
-job is cancelled or the server begins shutdown. Extraction checks tar headers
+The package writer and extractor now receive the server context and check it
+between entries and file-copy chunks. A cancelled package is not advertised;
+the worker's existing rollback removes its staging tree. The paths still have
+no per-job cancellation or operation deadline, and a single blocking filesystem
+read cannot be interrupted promptly by a context check. Extraction checks tar headers
 against `maxArchiveFiles = 1_000_000` and `maxArchiveBytes = 128 TiB`. Those are
 corruption ceilings, not practical per-job resource budgets. A compact zstd
 archive can therefore demand far more disk and time than the operator expects.
