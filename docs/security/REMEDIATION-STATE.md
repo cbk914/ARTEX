@@ -62,6 +62,8 @@ Updated: 2026-11-27. Local branch: `codex/security-remediation`. Baseline: `3cb0
 
 ## Current state
 
+Latest cross-cutting authorization commit: `8634d12` (agent global-deletion guard, operator API, regression and reusable full-suite launcher). The change is local and not deployed.
+
 Cross-cutting authorization follow-up: a PostgreSQL-backed pre-fix regression observed a task-attributed `delete_assets_by_host` tool call remove two synthetic assets from the global library. The local patch makes that agent tool deny all calls, drops its default binding and adds an authenticated operator route for exact-host deletion with explicit confirmation. Focused post-fix race tests for this route, the network-decision route and skill tools passed; `go vet ./server` passed. The complete `go test -exec /src/scripts/test-exec-isolation.sh -p 1 ./server -count=1` suite passed against disposable PostgreSQL. Two initial full runs without that launcher failed on six Linux root isolation tests because the dropped executor UID could not traverse Go's temporary test-binary directory; the repository test-only launcher grants only those temporary execute permissions. No operational assets were touched. Other model-accessible persistence mutations remain open for review.
 
 Latest local commits: `fb67e34` stages the policy evaluator and migration 17; `082f14a` stages the authenticated operator decision API. Neither commit is deployed or published, and neither closes ARTEX-004/009.
