@@ -1,6 +1,6 @@
 # ADR 0002: Campaign execution boundary
 
-Status: proposed. No runtime migration or deployment has occurred.
+Status: proposed, with a host-side lifecycle prototype. No runtime migration or deployment has occurred.
 
 ## Decision context
 
@@ -17,6 +17,12 @@ On 2026-11-27, a disposable `artex:local` container with no network or operation
 Two separate disposable sibling containers were then started with `--network none`, a read-only image, private tmpfs at `/campaign`, no capabilities, `no-new-privileges`, and CPU, memory and PID limits. Their PID, mount and network namespace identifiers differed. A marker written in A's private tmpfs was absent in B; B could neither see nor signal A's host PID. The probe used synthetic data and did not mount any operational ARTEX volume. The existing `artex:local` image declares `/app/data` and `/app/keys` volumes, so Docker created distinct empty anonymous volumes for these probes; they were inspected and removed with the probe containers. A production execution image must avoid or explicitly override those image-declared volumes.
 
 This proves only that Docker Desktop can supply separate local container boundaries under the tested options. It does not prove ARTEX routes any executor through them, that approved network traffic works, that a compromised process cannot exploit a kernel flaw, or that lifecycle and artifact exchange are correct. The implementation path is a dedicated trusted broker outside the ARTEX server and agent containers. It must own container creation and lifecycle, accept only opaque campaign handles and fixed reviewed image/policy choices, and expose no Docker daemon socket to the server or agents. Engine access in a broker is host-powerful and requires a separate credential and API review before deployment.
+
+## Host-side lifecycle prototype
+
+`sandboxbroker` now provides an in-memory campaign-to-handle registry and a Docker CLI engine for a trusted host-side process. The broker accepts a pinned image digest, allocates a random opaque handle and container name, creates one container per campaign, starts it, checks the effective Docker policy, and removes it by handle. A failed start or policy check triggers removal. Docker creation uses no bind mount, no network, a read-only root, dropped capabilities, `no-new-privileges`, a fixed non-root user, CPU/memory/PID limits, and private tmpfs paths. The `/app/data` and `/app/keys` tmpfs overrides prevent the current image's declared volumes from becoming anonymous volumes or exposing an operational mount. A local disposable container probe confirmed these paths were tmpfs and `docker inspect` reported no `Mounts` entries. Unit tests exercise handle lifecycle and reject an unexpected image volume, bind mount, or bridge network; `go test -race` and `go vet` passed for the package.
+
+This is deliberately not wired into the server or agents. It cannot run campaign tools, mediate network egress, exchange artifacts, authorize operators, persist handles across a broker crash, or prove teardown after host failure. The prototype's Docker Engine access remains host-powerful. `Create` failure cleanup and Docker policy verification need further adversarial review before production use. The current ARTEX deployment still uses the shared executor. The prototype is not a security acceptance gate and must not be reported as remediating ARTEX-001, ARTEX-004, or ARTEX-005.
 
 ## Proposed boundary
 
