@@ -20,6 +20,12 @@ OSV Scanner 2.7.0 independently reported affected packages in the web lockfile. 
 
 The high candidates include nine integer conversions (`G115`), three intentional or configurable TLS verification bypasses (`G402`), one template parse (`G708`), nine path operations (`G703`), six walk/path races (`G122`), two process exec paths (`G702`), and three other candidates. The `G703` and `G122` groups overlap the known filesystem and archive isolation work. The MCP client exposes an explicit `insecure` option and the enrichment client deliberately accepts target certificates during interception; their credential and network policy implications still require review. The template parser uses `text/template` and validates field names, but that observation alone does not close its resource or policy risks. No candidate has been dismissed solely because the code contains a guard. Keep these findings open for source-to-sink triage and targeted tests.
 
+## Existing local image baseline
+
+Trivy 0.76.2 scanned the existing `artex:local` image, ID `sha256:2876b75e32cfdd579f0e202639300ad703c746a05bf8203df77daf560ab89e7d`, without changing a container. This image predates the remediation branch and is **not** a validation of these commits. It returned 5,576 vulnerability records over 14 targets: 4,830 on Debian OS packages, 1 on the application Go binary, and the remainder on bundled tools and language runtimes. There were 2,580 distinct vulnerability IDs; the 102 critical and 1,083 high counts are records, not distinct exploits or validated reachable paths. Trivy supplied a fixed version for 753 records. The image bundles several separate Go recon tools, so the same advisory can appear in multiple targets.
+
+This baseline requires package-by-package triage and a separately built, immutable candidate image scan. Neither the source SBOM nor this older image scan establishes the release image's vulnerability state.
+
 ## Api-recon remediation
 
 `api-recon` is a separate, optional Node runtime. Its `runtime_harvest.js` uses `puppeteer-core` to launch a system Chromium and automate an authorized local browser session. The old lockfile resolved Puppeteer 23 and vulnerable transitive packages. The direct dependency and lockfile now resolve Puppeteer 25.19.0. The new package requires Node 22.12 or newer.
