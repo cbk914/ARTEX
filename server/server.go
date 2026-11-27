@@ -50,6 +50,9 @@ type Server struct {
 	m      *Manager
 	engine *Engine
 	ctx    context.Context
+	// taskSandboxes is installed only when the campaign broker can be used by
+	// every required tool path. Until then, the shared executor remains active.
+	taskSandboxes *taskSandboxController
 
 	skillDir    string // root directory for skill subdirectories
 	jwtKey      []byte // HS256 signing key loaded from / generated into keyDir/jwt.key

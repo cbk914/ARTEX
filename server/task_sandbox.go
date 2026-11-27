@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -176,5 +177,24 @@ func (c *taskSandboxController) RemoveTask(ctx context.Context, taskID int64) er
 		delete(c.entries, taskID)
 	}
 	c.mu.Unlock()
+	return nil
+}
+
+// removeTaskSandbox runs only after the task row has been deleted and its
+// in-process agents have stopped. A disconnected HTTP client cannot cancel
+// this bounded cleanup. A failure is returned as an auditable cleanup warning.
+func (s *Server) removeTaskSandbox(taskID string) error {
+	if s.taskSandboxes == nil {
+		return nil
+	}
+	id, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil || id <= 0 {
+		return errors.New("invalid task sandbox cleanup identity")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.taskSandboxes.RemoveTask(ctx, id); err != nil {
+		return fmt.Errorf("remove task sandbox: %w", err)
+	}
 	return nil
 }

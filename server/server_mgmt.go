@@ -264,8 +264,9 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 			s.taskAgentMu.Lock()
 			delete(s.taskAgents, id)
 			s.taskAgentMu.Unlock()
+			cleanupErr := s.removeTaskSandbox(id)
 			deleted = true
-			writeCommittedTaskDelete(w, result, err)
+			writeCommittedTaskDelete(w, result, errors.Join(err, cleanupErr))
 			return
 		}
 		writeErr(w, 500, err.Error())
@@ -278,6 +279,9 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 	s.taskAgentMu.Lock()
 	delete(s.taskAgents, id)
 	s.taskAgentMu.Unlock()
+	if err := s.removeTaskSandbox(id); err != nil {
+		result.CleanupWarning = err.Error()
+	}
 	deleted = true
 	writeJSON(w, 200, result)
 }
