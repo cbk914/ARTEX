@@ -3,6 +3,8 @@ package sandboxbroker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -111,10 +113,13 @@ func (d *DockerEngine) PutArtifact(ctx context.Context, id, name string, data []
 		return err
 	}
 	stageName := ".incoming/" + stageID
+	digest := sha256.Sum256(data)
+	expected := hex.EncodeToString(digest[:])
 	// Docker cp rejects read-only container roots even for tmpfs destinations.
 	// The trusted command accepts artifact bytes only on stdin; no caller data
-	// becomes shell source. The final rename is atomic within one tmpfs.
-	_, err = d.runner.RunInput(ctx, bytes.NewReader(data), "exec", "-i", "--user=0:0", id, "/bin/sh", "-c", "umask 077 && mkdir -p -m 0700 /artifacts/.incoming && test ! -e \"$2\" && cat > \"$1\" && chmod 0444 \"$1\" && mv \"$1\" \"$2\"", "--", "/artifacts/"+stageName, "/artifacts/"+name)
+	// becomes shell source. Verify the bytes inside the sandbox before the
+	// final rename makes the file visible to the executor.
+	_, err = d.runner.RunInput(ctx, bytes.NewReader(data), "exec", "-i", "--user=0:0", id, "/bin/sh", "-c", "umask 077 && mkdir -p -m 0700 /artifacts/.incoming && test ! -e \"$2\" && cat > \"$1\" && printf '%s  %s\\n' \"$3\" \"$1\" | sha256sum -c - >/dev/null && chmod 0444 \"$1\" && mv \"$1\" \"$2\"", "--", "/artifacts/"+stageName, "/artifacts/"+name, expected)
 	return err
 }
 

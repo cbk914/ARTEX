@@ -2,6 +2,7 @@ package sandboxbroker
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -10,6 +11,62 @@ import (
 	"testing"
 	"time"
 )
+
+// corruptingArtifactRunner simulates a damaged Docker stdin transfer while
+// leaving the broker's expected digest unchanged.
+type corruptingArtifactRunner struct{ commandRunner }
+
+func (r corruptingArtifactRunner) RunInput(ctx context.Context, input io.Reader, args ...string) ([]byte, error) {
+	data, err := io.ReadAll(input)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > 0 {
+		data[0] ^= 1
+	}
+	return r.commandRunner.RunInput(ctx, strings.NewReader(string(data)), args...)
+}
+
+func TestDockerCorruptArtifactTransferRetiresSandbox(t *testing.T) {
+	image := os.Getenv("ARTEX_SANDBOX_BROKER_SMOKE_IMAGE")
+	if image == "" {
+		t.Skip("set ARTEX_SANDBOX_BROKER_SMOKE_IMAGE to run Docker smoke test")
+	}
+	path, err := exec.LookPath("docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := NewDockerEngine(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.runner = corruptingArtifactRunner{engine.runner}
+	broker, err := New(engine, image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	handle, err := broker.Create(ctx, 101)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := broker.byHandle[handle].container
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		if _, err := engine.runner.Run(cleanupCtx, "inspect", id); err == nil {
+			_ = broker.Remove(cleanupCtx, handle)
+			t.Errorf("corrupt transfer left sandbox %s running", id)
+		}
+	}()
+	if err := broker.PutArtifact(ctx, handle, "fixture", []byte("TRUSTED")); err == nil {
+		t.Fatal("published corrupted artifact")
+	}
+	if _, err := broker.Run(ctx, handle, "test ! -e /artifacts/fixture"); err == nil {
+		t.Fatal("corrupt transfer left the sandbox handle usable")
+	}
+}
 
 // TestDockerBrokerSmoke is opt-in because it creates a disposable container.
 // Use only a reviewed local image digest that contains /bin/sh and sleep.

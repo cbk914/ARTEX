@@ -2,6 +2,8 @@ package sandboxbroker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -87,11 +89,15 @@ func TestDockerArtifactStagesUnderPrivateDirectory(t *testing.T) {
 	if err := d.PutArtifact(context.Background(), id, "fixture.txt", []byte("synthetic")); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.calls) != 1 || len(r.calls[0]) != 10 || r.calls[0][0] != "exec" || r.calls[0][1] != "-i" || r.calls[0][2] != "--user=0:0" || r.calls[0][3] != id {
+	if len(r.calls) != 1 || len(r.calls[0]) != 11 || r.calls[0][0] != "exec" || r.calls[0][1] != "-i" || r.calls[0][2] != "--user=0:0" || r.calls[0][3] != id {
 		t.Fatalf("unexpected Docker transfer: %v", r.calls)
 	}
 	if string(r.input) != "synthetic" || !strings.HasPrefix(r.calls[0][8], "/artifacts/.incoming/") || r.calls[0][9] != "/artifacts/fixture.txt" {
 		t.Fatalf("unsafe artifact destination: %v", r.calls[0])
+	}
+	digest := sha256.Sum256(r.input)
+	if r.calls[0][10] != hex.EncodeToString(digest[:]) || !strings.Contains(r.calls[0][6], "sha256sum -c -") || strings.Index(r.calls[0][6], "sha256sum -c -") > strings.Index(r.calls[0][6], "mv ") {
+		t.Fatalf("artifact publication does not verify staged bytes: %v", r.calls[0])
 	}
 }
 
