@@ -26,6 +26,20 @@ This is deliberately not wired into the server or agents. It cannot run campaign
 
 The opt-in `TestDockerBrokerSmoke` was cross-compiled with Go 1.26.11 and passed natively on Windows against the local image digest. It created, verified and removed one disposable Docker container; no sandbox container remained afterward.
 
+## Execution handoff inventory
+
+| Path | Current entry point | Migration requirement |
+| --- | --- | --- |
+| Planner, worker and main agent Bash | `agent/planner.go`, `agent/worker.go`, `agent/mainagent.go` compose Norma default tools; `server/execpriv_unix.go` places the Bash drop shim on `PATH` | Replace the SDK process launch with a broker-backed tool for every task run, including background jobs and cancellation. A task ID alone is not a verified campaign grant. |
+| Chat Bash | `agent/chat.go` composes the same default tools but records a session ID with task ID zero | Assign an explicit chat trust domain and sandbox lifecycle; do not silently attach a chat session to a campaign. |
+| Interactive shell | `server/assembly.go` exposes Norma `ShellSessionTools` to enabled agents; the same Bash shim currently supplies its identity | Keep stdin, terminal state, process groups, close and cancellation semantics inside one authorized sandbox. |
+| Custom command and Python tools | `server/customtool.go` sends command tools through Norma Bash, while `execPython` starts the interpreter directly after writing a script | Route both launch paths and script/parameter transfer through the broker. The server must not execute arbitrary campaign code directly. |
+| Stdio MCP | `server/assembly.go` and `server/mcpdiscover.go` start configured commands, including global discovery and agents' per-run clients | Decide whether discovery is non-executing metadata or runs in an isolated scope; carry stdio streams and approved credentials through a scoped broker channel. |
+| File tools | `agent/filetools.go` runs Read/Write/Edit/MultiEdit/LS/Glob/Grep inside the server under a temporary filesystem identity | Move campaign file access to a sandbox-facing file API or a separately authorized artifact store; a host `os.Root` over a shared run tree is not campaign isolation. |
+| HTTP MCP, WebFetch and custom HTTP | `server/mcpdiscover.go` creates HTTP/SSE clients; `agent/chat.go` and `server/customtool.go` provide additional direct network paths | Enforce the same per-campaign target grant in a network gateway, including redirect and DNS decisions. Process isolation alone cannot enforce ARTEX-004. |
+
+`agent/runinfo.go` carries task, exploration, intent or chat-session attribution to tool assembly. It is optional context, not an authorization token. The broker cannot infer campaign scope from it without a server-side operator grant and a verified task-to-campaign mapping. Startup MCP discovery and chat have no task scope, so both need explicit handling before an isolated mode can be enabled.
+
 ## Proposed boundary
 
 Introduce a trusted campaign execution broker that owns a `SandboxHandle` for each campaign. The handle carries an opaque ID, the authorized campaign and operator scope, private filesystem and process namespace references, network policy reference, resource limits and lifecycle state. The server must use that handle for every Bash, interactive shell, background task, Python, custom-tool and stdio MCP launch, and for file-tool operations. No tool receives a raw identity, host path or namespace selector from an LLM or imported document.
