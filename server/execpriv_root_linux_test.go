@@ -24,11 +24,10 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
-// Root tests of the three executor paths: the Bash tool through the PATH shim, a
-// custom tool through SysProcAttr.Credential, and an MCP stdio command through the
-// drop shim. Each runs the same probe as the agent would and must show the executor
-// identity, no access to a 0600 root file or to the server's /proc environ, and a
-// writable HOME and cache.
+// Root tests of the three executor paths: Bash through the PATH shim, and custom
+// tools and MCP stdio through the drop shim. Each runs the same probe as the agent
+// would and must show the executor identity, no access to a 0600 root file or to
+// the server's /proc environ, and a writable HOME and cache.
 
 type execRootFixture struct {
 	priv                          ExecPrivilege
@@ -138,7 +137,7 @@ func TestExecutorBashShimAsRoot(t *testing.T) {
 	f.check(t, "bash shim", res.Flatten())
 }
 
-// A custom script tool runs through execPython, which applies the credential.
+// A custom script tool runs through execPython and the drop shim.
 func TestExecutorCustomToolAsRoot(t *testing.T) {
 	f := newExecRootFixture(t)
 	py, err := exec.LookPath("python3")
@@ -152,6 +151,29 @@ print(subprocess.run(["sh", "-c", os.environ["PROBE"]], capture_output=True, tex
 		t.Fatal(err)
 	}
 	f.check(t, "custom tool", out)
+}
+
+// Custom Python tools must inherit no_new_privs, like Bash and MCP processes.
+// A credential drop alone does not prevent a later setuid binary from raising
+// privileges when the container lacks Docker's no-new-privileges option.
+func TestExecutorCustomToolNoNewPrivsAsRoot(t *testing.T) {
+	f := newExecRootFixture(t)
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 unavailable")
+	}
+	code := `for line in open('/proc/self/status'):
+    if line.startswith('NoNewPrivs:'):
+        print(line.strip())
+        break
+`
+	out, err := execPython(context.Background(), py, "nnp", code, nil, f.work, nil, 10*time.Second, f.priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "NoNewPrivs:\t1") {
+		t.Fatalf("custom tool did not inherit no_new_privs: %q", out)
+	}
 }
 
 // The script of a custom tool is written to the root-owned script directory, not

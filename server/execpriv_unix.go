@@ -33,7 +33,7 @@ const (
 // bbot or Playwright would fail there.
 const execHomeDir = "exec-home"
 
-func execPrivilegeSupported() bool { return true }
+func execPrivilegeSupported() bool { return runtime.GOOS == "linux" }
 
 func serverIsRoot() bool { return os.Geteuid() == 0 }
 
@@ -699,8 +699,7 @@ func runBashShim(argv []string) {
 // PR_SET_NO_NEW_PRIVS is set first, before the identity changes, on the calling
 // thread. The shims call this with their thread locked (runBashShim, runDropShim),
 // so the same thread goes on to exec the target and the flag is inherited by it and
-// everything it forks. Custom tools take SysProcAttr.Credential in the server and do
-// not pass through this shim, so the flag is a known gap there.
+// everything it forks. Custom tools also use the drop shim.
 func enterExecutor(uid, gid int) error {
 	if err := setNoNewPrivsFn(); err != nil {
 		return fmt.Errorf("no_new_privs must be set before the executor identity is applied: %w", err)

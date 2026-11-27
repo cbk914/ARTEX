@@ -24,6 +24,8 @@ func agentProcessEnv(p ExecPrivilege) []string { return os.Environ() }
 
 func withExecKeep(p ExecPrivilege, env map[string]string) map[string]string { return env }
 
+func withExecKeepList(p ExecPrivilege, env []string) []string { return env }
+
 func prepareExecScript(p ExecPrivilege, path string) error { return nil }
 
 func shareRestoredTaskDir(p ExecPrivilege, taskDir string) error { return nil }

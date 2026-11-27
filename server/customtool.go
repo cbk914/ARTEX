@@ -524,7 +524,14 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	c := exec.CommandContext(runCtx, interp, tmp)
+	if priv.Enabled && !execPrivilegeSupported() {
+		return "", errors.New("agent process isolation is not supported on this platform")
+	}
+	command, args, err := execDropCommand(priv, interp, []string{tmp})
+	if err != nil {
+		return "", err
+	}
+	c := exec.CommandContext(runCtx, command, args...)
 	c.Dir = workDir
 	// The allowlist as the executor (execenv_unix.go), then the session proxy env.
 	c.Env = append(agentProcessEnv(priv), sessionEnv...)
@@ -533,7 +540,9 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 			c.Env = append(c.Env, "TOOL_"+strings.ToUpper(k)+"="+sv)
 		}
 	}
-	applyExecCredential(c, priv) // after c.Env: it sets the executor's HOME there
+	// The drop shim sets no_new_privs before changing identity. Keep only the
+	// explicitly supplied custom-tool variables beyond its base allowlist.
+	c.Env = withExecKeepList(priv, c.Env)
 	pj, _ := json.Marshal(params)
 	c.Stdin = bytes.NewReader(pj) // parameter JSON goes via stdin
 	out, err := c.CombinedOutput()

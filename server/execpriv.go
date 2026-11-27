@@ -14,10 +14,10 @@ import (
 // prompt-injected command runs as root in the same container: it reads /app/keys,
 // the config file and /proc/<server-pid>/environ with root's rights.
 //
-// The drop is applied to the child, never to the server: SysProcAttr.Credential for
-// the processes ARTEX starts itself, and for the processes the Norma library starts
-// (Bash, shell, MCP stdio) a shim in the same binary that drops and then execs the
-// real program. See execpriv_unix.go.
+// The drop is applied to the child, never to the server. Bash, shell, custom
+// Python tools and MCP stdio use a shim in the same binary that sets
+// no_new_privs, drops identity and then execs the real program. See
+// execpriv_unix.go.
 
 // Default executor identity. It is a numeric id, not a system account: the kernel
 // accepts any uid. Override it with -exec-uid and -exec-gid.

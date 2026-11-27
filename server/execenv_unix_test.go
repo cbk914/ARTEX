@@ -52,6 +52,21 @@ func TestWithExecKeep(t *testing.T) {
 	}
 }
 
+func TestWithExecKeepList(t *testing.T) {
+	p := ExecPrivilege{Enabled: true, UID: 10001, GID: 10001}
+	env := []string{"PATH=/usr/bin", "PROBE=ok", "TOOL_TARGET=example.com", "TOOL_BAD,SECRET=x", "ARTEX_EXEC_KEEP=OPENAI_API_KEY"}
+	got := withExecKeepList(p, env)
+	if last := got[len(got)-1]; last != envExecKeep+"=PROBE,TOOL_TARGET" {
+		t.Fatalf("custom-tool keep list = %q", last)
+	}
+	if len(got) != len(env)+1 {
+		t.Fatalf("custom-tool environment has %d entries, want %d", len(got), len(env)+1)
+	}
+	if disabled := withExecKeepList(ExecPrivilege{}, env); len(disabled) != len(env) {
+		t.Fatalf("disabled drop changed the environment: %v", disabled)
+	}
+}
+
 // agentProcessEnv filters only for an executor.
 func TestAgentProcessEnv(t *testing.T) {
 	t.Setenv("ARTEX_ISOLATION_CANARY", "canary")

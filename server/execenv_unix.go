@@ -120,3 +120,40 @@ func withExecKeep(p ExecPrivilege, env map[string]string) map[string]string {
 	out[envExecKeep] = strings.Join(names, ",")
 	return out
 }
+
+// withExecKeepList names custom-tool variables for the drop shim. The parent
+// already filters its base environment; names added for the session and scalar
+// parameters must survive the shim's second allowlist pass. Commas and other
+// non-identifier bytes cannot alter the comma-separated keep list.
+func withExecKeepList(p ExecPrivilege, env []string) []string {
+	if !p.Enabled {
+		return env
+	}
+	keep := map[string]bool{}
+	for _, kv := range env {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && validExecEnvName(name) && name != envExecKeep && !executorEnvAllowed(name) {
+			keep[name] = true
+		}
+	}
+	names := make([]string, 0, len(keep))
+	for name := range keep {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return append(env, envExecKeep+"="+strings.Join(names, ","))
+}
+
+func validExecEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
