@@ -1559,6 +1559,12 @@ func skillNameFromFrontmatter(md []byte) string {
 // of size/count caps guard against zip bombs. POST ?overwrite=true replaces an
 // existing skill of the same name.
 func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
+	if !s.acquireUploadSlot() {
+		w.Header().Set("Retry-After", "1")
+		writeErr(w, http.StatusTooManyRequests, "too many concurrent uploads; retry shortly")
+		return
+	}
+	defer func() { <-s.uploadSlots }()
 	r.Body = http.MaxBytesReader(w, r.Body, maxSkillZipBytes)
 	file, hdr, err := r.FormFile("file")
 	if err != nil {
