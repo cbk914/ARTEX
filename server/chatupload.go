@@ -35,9 +35,11 @@ var safeChatID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // to the chat's working dir (e.g. "uploads/report.txt"), which is the agent's CWD, so
 // it can Read/Bash the file directly; Name/Size drive the UI card.
 type chatAttachment struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-	Size int64  `json:"size"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	URL    string `json:"url,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
 	// Abs is the absolute on-disk path (m.dir is already absolute). For pre-task staging
 	// (scope=staging) the frontend uses it to write the prompt into the description; task/session use composeAgentMessage, which builds the path in the backend.
 	Abs string `json:"abs,omitempty"`

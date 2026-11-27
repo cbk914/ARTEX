@@ -1,7 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,8 +16,19 @@ import (
 	"github.com/Autumn-27/artex/intercept"
 )
 
+func testOperatorPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
 // A worker's image_path is read from its run directory tasks/<id>/i<N>; the copy is
-// staged in tasks/<id>/uploads.
+// staged in a server-private evidence tree.
 func TestStageAskOperatorImage(t *testing.T) {
 	dir := t.TempDir()
 	taskDir := filepath.Join(dir, "tasks", "7")
@@ -22,7 +37,8 @@ func TestStageAskOperatorImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := filepath.Join(runDir, "shot.png")
-	if err := os.WriteFile(src, []byte("fakepng"), 0o644); err != nil {
+	pngBytes := testOperatorPNG(t)
+	if err := os.WriteFile(src, pngBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -37,11 +53,11 @@ func TestStageAskOperatorImage(t *testing.T) {
 	if err != nil || len(att) != 1 {
 		t.Fatalf("valid src: att=%v err=%v", att, err)
 	}
-	if !strings.HasPrefix(att[0].Path, "uploads/ask-operator-") || !strings.HasSuffix(att[0].Path, ".png") {
+	if !strings.HasPrefix(att[0].Path, "operator-evidence/tasks/7/ask-operator-") || !strings.HasSuffix(att[0].Path, ".png") {
 		t.Fatalf("unexpected attachment path %q", att[0].Path)
 	}
-	if got, err := os.ReadFile(filepath.Join(taskDir, "uploads", att[0].Name)); err != nil || string(got) != "fakepng" {
-		t.Fatalf("copy under tasks/7/uploads: %q, %v", got, err)
+	if got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(att[0].Path))); err != nil || !bytes.Equal(got, pngBytes) {
+		t.Fatalf("protected copy: %q, %v", got, err)
 	}
 	if _, err := os.Lstat(filepath.Join(runDir, "uploads")); !os.IsNotExist(err) {
 		t.Fatalf("the copy must not be staged in the run directory: %v", err)
@@ -77,7 +93,11 @@ func TestStageAskOperatorImage(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		content := []byte("x")
+		if file == inMain {
+			content = pngBytes
+		}
+		if err := os.WriteFile(file, content, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := stageAskOperatorImage(dir, 7, 3, file); err == nil {
@@ -128,18 +148,18 @@ func askOperatorRunDirs(t *testing.T) (dir, taskDir string) {
 		if err := os.MkdirAll(filepath.Join(taskDir, leaf), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(taskDir, leaf, "shot.png"), []byte("png of "+leaf), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(taskDir, leaf, "shot.png"), testOperatorPNG(t), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return dir, taskDir
 }
 
-// The copy of a worker's and of the main agent's image goes to tasks/<id>/uploads
-// under a name that is not predictable, as a new 0640 file.
+// The copy of a worker's and of the main agent's image goes to the private
+// evidence tree under a name that is not predictable, as a new 0600 file.
 func TestStageAskOperatorImageNameAndMode(t *testing.T) {
 	dir, taskDir := askOperatorRunDirs(t)
-	nameRE := regexp.MustCompile(`^ask-operator-\d+-[0-9a-f]{8}\.png$`)
+	nameRE := regexp.MustCompile(`^ask-operator-\d+-[0-9a-f]{32}\.png$`)
 	seen := map[string]bool{}
 	for _, c := range []struct {
 		intent int64
@@ -149,24 +169,24 @@ func TestStageAskOperatorImageNameAndMode(t *testing.T) {
 		if err != nil || len(att) != 1 {
 			t.Fatalf("%s/shot.png: att=%v err=%v", c.leaf, att, err)
 		}
-		if !nameRE.MatchString(att[0].Name) || att[0].Path != "uploads/"+att[0].Name || seen[att[0].Name] {
+		if !nameRE.MatchString(att[0].Name) || att[0].Path != "operator-evidence/tasks/7/"+att[0].Name || seen[att[0].Name] {
 			t.Fatalf("%s/shot.png: staged as %q (path %q)", c.leaf, att[0].Name, att[0].Path)
 		}
 		seen[att[0].Name] = true
-		staged := filepath.Join(taskDir, "uploads", att[0].Name)
-		if got, err := os.ReadFile(staged); err != nil || string(got) != "png of "+c.leaf {
+		staged := filepath.Join(dir, filepath.FromSlash(att[0].Path))
+		if got, err := os.ReadFile(staged); err != nil || !bytes.Equal(got, testOperatorPNG(t)) {
 			t.Fatalf("%s/shot.png: copy holds %q, %v", c.leaf, got, err)
 		}
 		fi, err := os.Lstat(staged)
 		if err != nil || !fi.Mode().IsRegular() {
 			t.Fatalf("%s/shot.png: staged copy: %v %v", c.leaf, fi, err)
 		}
-		if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
-			t.Fatalf("%s/shot.png: staged copy has mode %v, want 0640", c.leaf, fi.Mode().Perm())
+		if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+			t.Fatalf("%s/shot.png: staged copy has mode %v, want 0600", c.leaf, fi.Mode().Perm())
 		}
 	}
-	if fi, err := os.Lstat(filepath.Join(taskDir, "uploads")); err != nil || !fi.IsDir() {
-		t.Fatalf("tasks/7/uploads: %v %v", fi, err)
+	if fi, err := os.Lstat(filepath.Join(dir, "operator-evidence", "tasks", "7")); err != nil || !fi.IsDir() {
+		t.Fatalf("private evidence directory: %v %v", fi, err)
 	}
 
 	// A directory with an image name is not staged.
@@ -176,17 +196,17 @@ func TestStageAskOperatorImageNameAndMode(t *testing.T) {
 	if att, err := stageAskOperatorImage(dir, 7, 3, "dir.png"); err == nil {
 		t.Fatalf("staged a directory: %v", att)
 	}
-	if entries, err := os.ReadDir(filepath.Join(taskDir, "uploads")); err != nil || len(entries) != len(seen) {
-		t.Fatalf("uploads holds %d entries (%v), want %d", len(entries), err, len(seen))
+	if entries, err := os.ReadDir(filepath.Join(dir, "operator-evidence", "tasks", "7")); err != nil || len(entries) != len(seen)*2 {
+		t.Fatalf("evidence store holds %d entries (%v), want %d", len(entries), err, len(seen)*2)
 	}
 }
 
 // An uploads entry that is a symlink to a directory elsewhere, or a file, is
 // refused, and nothing is written through it.
 func TestStageAskOperatorImageRefusesSymlinkedUploads(t *testing.T) {
-	dir, taskDir := askOperatorRunDirs(t)
+	dir, _ := askOperatorRunDirs(t)
 	outside := t.TempDir()
-	uploads := filepath.Join(taskDir, "uploads")
+	uploads := filepath.Join(dir, "operator-evidence")
 	if err := os.Symlink(outside, uploads); err != nil {
 		t.Skipf("no symlink here: %v", err)
 	}
@@ -199,7 +219,7 @@ func TestStageAskOperatorImageRefusesSymlinkedUploads(t *testing.T) {
 		t.Fatalf("the symlink target holds %v (%v), want it empty", entries, err)
 	}
 	if fi, err := os.Lstat(uploads); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("the uploads symlink changed: %v %v", fi, err)
+		t.Fatalf("the evidence symlink changed: %v %v", fi, err)
 	}
 
 	if err := os.Remove(uploads); err != nil {
@@ -209,7 +229,7 @@ func TestStageAskOperatorImageRefusesSymlinkedUploads(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := stageAskOperatorImage(dir, 7, 3, "shot.png"); err == nil {
-		t.Fatal("staged with a file in place of the uploads directory")
+		t.Fatal("staged with a file in place of the evidence directory")
 	}
 	if got, _ := os.ReadFile(uploads); string(got) != "a file" {
 		t.Fatalf("the file in place of uploads changed: %q", got)
@@ -220,13 +240,15 @@ func TestStageAskOperatorImageRefusesSymlinkedUploads(t *testing.T) {
 // opened nor replaced: another name is tried, and after askOperatorStageTries taken
 // names the copy is refused.
 func TestStageAskOperatorImageNeverOverwrites(t *testing.T) {
-	dir, taskDir := askOperatorRunDirs(t)
-	uploads := filepath.Join(taskDir, "uploads")
-	if err := os.Mkdir(uploads, 0o755); err != nil {
+	dir, _ := askOperatorRunDirs(t)
+	root, prefix, err := openOperatorEvidenceDir(dir, 7)
+	if err != nil {
 		t.Fatal(err)
 	}
+	root.Close()
+	uploads := filepath.Join(dir, prefix)
 	const taken, linked = "ask-operator-taken.png", "ask-operator-linked.png"
-	if err := os.WriteFile(filepath.Join(uploads, taken), []byte("kept"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(uploads, taken), []byte("kept"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	target := filepath.Join(t.TempDir(), "target.png")
@@ -283,6 +305,7 @@ func TestStageAskOperatorImageNeverOverwrites(t *testing.T) {
 func TestOpenAskOperatorImageRefusesSwap(t *testing.T) {
 	dir, taskDir := askOperatorRunDirs(t)
 	src := filepath.Join(taskDir, "i3", "shot.png")
+	runDir := filepath.Join(taskDir, "i3")
 	outside := filepath.Join(dir, "outside.png")
 	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
 		t.Fatal(err)
@@ -291,7 +314,7 @@ func TestOpenAskOperatorImageRefusesSwap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := openAskOperatorImage(src, lst)
+	f, err := openAskOperatorImage(runDir, src, lst)
 	if err != nil {
 		t.Fatalf("unchanged file: %v", err)
 	}
@@ -305,7 +328,7 @@ func TestOpenAskOperatorImageRefusesSwap(t *testing.T) {
 	if err := os.Rename(other, src); err != nil {
 		t.Fatal(err)
 	}
-	if f, err := openAskOperatorImage(src, lst); err == nil {
+	if f, err := openAskOperatorImage(runDir, src, lst); err == nil {
 		f.Close()
 		t.Fatal("opened a file that replaced the checked one")
 	}
@@ -317,7 +340,7 @@ func TestOpenAskOperatorImageRefusesSwap(t *testing.T) {
 	if err := os.Symlink(outside, src); err != nil {
 		t.Skipf("no symlink here: %v", err)
 	}
-	if f, err := openAskOperatorImage(src, lst); err == nil {
+	if f, err := openAskOperatorImage(runDir, src, lst); err == nil {
 		f.Close()
 		t.Fatal("opened the target of a symlink that replaced the checked file")
 	}
@@ -325,7 +348,7 @@ func TestOpenAskOperatorImageRefusesSwap(t *testing.T) {
 	if lst, err = os.Lstat(src); err != nil {
 		t.Fatal(err)
 	}
-	if f, err := openAskOperatorImage(src, lst); err == nil {
+	if f, err := openAskOperatorImage(runDir, src, lst); err == nil {
 		f.Close()
 		t.Fatal("opened a path whose last component is a symlink")
 	}

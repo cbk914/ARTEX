@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -41,7 +39,7 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 				},
 				"image_path": map[string]any{
 					"type":        "string",
-					"description": "Optional path to a screenshot (png/jpg/jpeg/webp/gif, max 10MB) in your run directory, e.g. the browser_take_screenshot output. A relative path resolves from the run directory; an absolute path must be inside it. It is copied into the task uploads and shown to the operator.",
+					"description": "Optional path to a screenshot (png/jpg/jpeg/webp/gif, max 10MB) in your run directory, e.g. the browser_take_screenshot output. A relative path resolves from the run directory; an absolute path must be inside it. A server-private snapshot is shown to the operator.",
 				},
 			},
 			"required": []any{"question"},
@@ -65,7 +63,7 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 			if t == nil {
 				return actool.Errorf("Error: task not found"), nil
 			}
-			att, err := stageAskOperatorImage(s.m.dir, ri.TaskID, ri.IntentID, req.ImagePath)
+			att, err := stageAskOperatorImageContext(ctx, s.m.dir, ri.TaskID, ri.IntentID, req.ImagePath)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -192,65 +190,67 @@ func resolveAskOperatorImage(runDir, src string) (string, error) {
 	return real, nil
 }
 
-// openAskOperatorImage opens the image at path and requires the opened file to be
-// the regular file lst describes, lst being the Lstat of path. Between the
-// EvalSymlinks of resolveAskOperatorImage and this open, the agent can replace the
-// file with a symlink: Lstat does not follow one and the open does, so the two then
-// name different files and the image is refused.
-func openAskOperatorImage(path string, lst os.FileInfo) (*os.File, error) {
+// openAskOperatorImage opens from the run-directory descriptor. A replacement
+// of any parent component cannot redirect the read outside that directory.
+func openAskOperatorImage(runDir, path string, lst os.FileInfo) (*os.File, error) {
 	if !lst.Mode().IsRegular() {
 		return nil, fmt.Errorf("image_path must be a regular file")
 	}
-	f, err := os.Open(path)
+	realRoot, err := filepath.EvalSymlinks(runDir)
 	if err != nil {
 		return nil, fmt.Errorf("image not readable")
 	}
-	if st, err := f.Stat(); err != nil || !os.SameFile(lst, st) {
+	rel, err := filepath.Rel(realRoot, path)
+	if err != nil || !filepath.IsLocal(rel) {
+		return nil, fmt.Errorf("image_path must stay inside the run directory")
+	}
+	root, err := os.OpenRoot(realRoot)
+	if err != nil {
+		return nil, fmt.Errorf("image not readable")
+	}
+	defer root.Close()
+	f, err := openWorkspaceCandidate(root, rel)
+	if err != nil {
+		return nil, fmt.Errorf("image not readable")
+	}
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() || !os.SameFile(lst, st) {
 		f.Close()
 		return nil, fmt.Errorf("image changed while it was read")
 	}
 	return f, nil
 }
 
-// askOperatorUploadsDir returns tasks/<id>/uploads, created when absent. A symlink
-// or anything else that is not a directory is refused: the copy would be written
-// through it.
-func askOperatorUploadsDir(taskDir string) (string, error) {
-	dir := filepath.Join(taskDir, "uploads")
-	if err := os.Mkdir(dir, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
-		return "", err
-	}
-	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("the task uploads directory is not a directory")
-	}
-	return dir, nil
-}
-
 // askOperatorStageTries bounds the names tried for one staged copy.
 const askOperatorStageTries = 5
 
 // askOperatorStageName returns the file name of a staged copy. It cannot be
-// predicted, so it cannot be prepared in uploads/ ahead of the copy. A variable for
+// predicted, so it cannot be prepared in the private store ahead of the copy. A variable for
 // the tests.
 var askOperatorStageName = func(ext string) string {
-	var b [4]byte
-	_, _ = rand.Read(b[:])
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
 	return fmt.Sprintf("ask-operator-%d-%x%s", time.Now().UnixNano(), b, ext)
 }
 
-// stageAskOperatorImage copies the referenced image into the task's uploads dir
-// (tasks/<id>/uploads, where the transcript attachment card resolves) and returns
+// stageAskOperatorImage copies the referenced image into a server-private directory
+// (operator-evidence/tasks/<id>) and returns
 // the attachment descriptor. The image is read from the run directory of the agent
 // that asks: tasks/<id>/i<intentID> for a worker, tasks/<id>/main without an intent.
-// The copy is a new file, mode 0640: an existing name is never opened or replaced.
+// The copy is a new file, mode 0600: an existing name is never opened or replaced.
 // Empty src returns no attachment.
 func stageAskOperatorImage(dataDir string, taskID, intentID int64, src string) ([]chatAttachment, error) {
+	return stageAskOperatorImageContext(context.Background(), dataDir, taskID, intentID, src)
+}
+
+func stageAskOperatorImageContext(ctx context.Context, dataDir string, taskID, intentID int64, src string) ([]chatAttachment, error) {
 	src = strings.TrimSpace(src)
 	if src == "" {
 		return nil, nil
 	}
-	taskDir := filepath.Join(dataDir, "tasks", strconv.FormatInt(taskID, 10))
-	resolved, err := resolveAskOperatorImage(agent.EnsureRunDir(dataDir, taskID, intentID), src)
+	runDir := agent.EnsureRunDir(dataDir, taskID, intentID)
+	resolved, err := resolveAskOperatorImage(runDir, src)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +258,7 @@ func stageAskOperatorImage(dataDir string, taskID, intentID int64, src string) (
 	if err != nil {
 		return nil, fmt.Errorf("image not readable")
 	}
-	in, err := openAskOperatorImage(resolved, st)
+	in, err := openAskOperatorImage(runDir, resolved, st)
 	if err != nil {
 		return nil, err
 	}
@@ -266,26 +266,25 @@ func stageAskOperatorImage(dataDir string, taskID, intentID int64, src string) (
 	if st.Size() > askOperatorMaxImage {
 		return nil, fmt.Errorf("image too large (%s, max 10MB)", humanBytes(st.Size()))
 	}
-	dir, err := askOperatorUploadsDir(taskDir)
+	root, dir, err := openOperatorEvidenceDir(dataDir, taskID)
 	if err != nil {
 		return nil, err
 	}
+	defer root.Close()
 	ext := strings.ToLower(filepath.Ext(resolved))
-	var name string
-	var out *os.File
-	for try := 1; ; try++ {
-		name = askOperatorStageName(ext)
-		out, err = os.OpenFile(filepath.Join(dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, fs.ErrExist) || try == askOperatorStageTries {
+	for try := 1; try <= askOperatorStageTries; try++ {
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		name := askOperatorStageName(ext)
+		meta, err := saveOperatorEvidence(ctx, root, dir, taskID, intentID, name, in, st.Size())
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return []chatAttachment{{Name: name, Path: filepath.ToSlash(filepath.Join(dir, name)), Size: meta.Size, URL: fmt.Sprintf("/api/tasks/%d/evidence/%s", taskID, name), SHA256: meta.SHA256}}, nil
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return nil, err
-	}
-	return []chatAttachment{{Name: name, Path: "uploads/" + name, Size: st.Size()}}, nil
+	return nil, fmt.Errorf("could not reserve an evidence name")
 }

@@ -537,6 +537,24 @@ export const api = {
     URL.revokeObjectURL(objUrl);
   },
 
+  operatorEvidenceDownload: async (url: string) => {
+    if (!/^\/api\/tasks\/\d+\/evidence\/ask-operator-[a-zA-Z0-9._-]+$/.test(url)) {
+      throw new Error("Invalid evidence URL");
+    }
+    const token = getToken();
+    const response = await fetch(url, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+    if (!response.ok) throw new Error(t("Download failed: {error}", { error: response.status }));
+    const blob = await response.blob();
+    const objectURL = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectURL;
+    link.download = url.slice(url.lastIndexOf("/") + 1);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectURL);
+  },
+
   // ---- assets ----
   // Server-side paginated: pass limit/offset, get back the page + full match total.
   assets: (type = "", limit = 50, offset = 0, companyId: number | null = null) =>

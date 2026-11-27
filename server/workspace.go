@@ -43,7 +43,7 @@ func (s *Server) wsResolveConfined(rel string) (confinedPath, bool) {
 // that the workspace file manager must not expose. traffic/_ca holds the
 // capture proxy CA private key; traffic/_index holds the SQLite exchange index;
 // traffic/_blobs holds the captured bodies the index refers to by hash.
-var workspaceDeniedPrefixes = []string{"traffic/_ca", "traffic/_index", "traffic/_blobs"}
+var workspaceDeniedPrefixes = []string{"traffic/_ca", "traffic/_index", "traffic/_blobs", "operator-evidence"}
 
 // workspacePathDenied reports whether realPath lands in a platform-internal
 // subtree. It compares the canonicalized path relative to the real root, so a

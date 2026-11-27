@@ -577,7 +577,7 @@ function fmtBytes(n: number): string {
   return `${n} B`;
 }
 
-type MsgAttachment = { name: string; path: string; size: number };
+type MsgAttachment = { name: string; path: string; size: number; url?: string; sha256?: string };
 
 // parseUserBody splits a user turn's body into text + attachments. The backend stores
 // Detail as JSON {text, attachments} when files were uploaded, else plain text — so we
@@ -633,17 +633,26 @@ function UserRow({ step, intent, getDetail }: { step: Activity; intent?: boolean
         )}
         {attachments.length > 0 && (
           <div className="flex min-w-0 max-w-full flex-wrap justify-end gap-1.5">
-            {attachments.map((a) => (
-              <div
-                key={a.path}
-                className="flex min-w-0 max-w-full items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs shadow-sm"
-                title={a.path}
-              >
+            {attachments.map((a) => {
+              const safeEvidenceURL = typeof a.url === "string" && /^\/api\/tasks\/\d+\/evidence\/ask-operator-[a-zA-Z0-9._-]+$/.test(a.url);
+              const content = <>
                 <PaperclipIcon className="size-3 shrink-0 text-primary" />
                 <span className="max-w-[180px] truncate font-medium">{a.name}</span>
                 <span className="shrink-0 text-muted-foreground">{fmtBytes(a.size)}</span>
-              </div>
-            ))}
+              </>;
+              const className = "flex min-w-0 max-w-full items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs shadow-sm";
+              return safeEvidenceURL ? (
+                <button
+                  key={a.path}
+                  type="button"
+                  onClick={() => api.operatorEvidenceDownload(a.url ?? "").catch((error) => toast.error(String(error)))}
+                  className={className}
+                  title={a.sha256 ? `SHA-256: ${a.sha256}` : a.path}
+                >{content}</button>
+              ) : (
+                <div key={a.path} className={className} title={a.path}>{content}</div>
+              );
+            })}
           </div>
         )}
         {text && (
