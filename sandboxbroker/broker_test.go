@@ -27,7 +27,7 @@ func (f *fakeEngine) Create(_ context.Context, s Spec) (string, error) {
 	if !strings.HasPrefix(s.Name, "artex-campaign-") || s.Image != testImage {
 		return "", errors.New("bad spec")
 	}
-	if !ownershipToken.MatchString(s.Token) {
+	if !ownershipToken.MatchString(s.Token) || !brokerOwner.MatchString(s.Owner) {
 		return "", errors.New("missing ownership token")
 	}
 	return strings.Repeat("a", 64), nil
@@ -145,6 +145,18 @@ func TestBrokerRejectsUnpinnedImage(t *testing.T) {
 		if _, err := New(&fakeEngine{}, image); err == nil {
 			t.Errorf("accepted image %q", image)
 		}
+	}
+}
+
+func TestBrokerRequiresValidOwner(t *testing.T) {
+	for _, owner := range []string{"", "foreign", strings.Repeat("g", 32)} {
+		if _, err := NewWithOwner(&fakeEngine{}, testImage, owner); err == nil {
+			t.Errorf("accepted invalid owner %q", owner)
+		}
+	}
+	broker, err := NewWithOwner(&fakeEngine{}, testImage, strings.Repeat("a", 32))
+	if err != nil || broker.owner != strings.Repeat("a", 32) {
+		t.Fatalf("valid owner rejected: %v", err)
 	}
 }
 

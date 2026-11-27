@@ -74,6 +74,8 @@ ARTEX-001/005 broker-client follow-up: a new Unix-only control client validates 
 
 The scratch broker image was rebuilt after the client and socket validator changes; the real Docker-backed acceptance script passed again and the validation image was removed. No operational container or volume was modified.
 
+ARTEX-001/005 broker ownership follow-up: each created sandbox now has a random broker-owner label as well as its independent container token. Verification and failed-create cleanup reject an owner mismatch. Unit race tests, vet, Windows cross-compilation and a disposable two-campaign Docker Engine acceptance passed; both children had the same owner label and no test resources remained. The owner is not yet durable across broker restarts and no orphan recovery is implemented, so this is a prerequisite rather than closure of the P0 findings.
+
 Latest ARTEX-004 gateway transport commit: `7f5e525`. It remains local, unintegrated and undeployed.
 
 ARTEX-004 gateway transport follow-up: a new `networkgateway` package binds TCP CONNECT requests to a fixed campaign ID and the staged policy evaluator, rejects other methods, bounds concurrency, duration and bytes, and refuses a tunnel whose connection cannot accept a deadline. Isolated loopback race tests exercise an allowed tunnel, direct-IP bypass denial, revocation on the next connection, limits and malformed authority; `go vet` passed for the gateway and evaluator. This is not wired into ARTEX or a Docker network, and does not intercept plain HTTP, UDP, SOCKS or raw sockets. The P0 finding remains open.

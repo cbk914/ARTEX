@@ -16,7 +16,7 @@ import (
 
 var pinnedImage = regexp.MustCompile(`^(?:[a-zA-Z0-9][a-zA-Z0-9._/:-]*@)?sha256:[a-f0-9]{64}$`)
 
-type Spec struct{ Name, Image, Token string }
+type Spec struct{ Name, Image, Token, Owner string }
 
 // Engine is implemented only by a trusted host-side container controller.
 type Engine interface {
@@ -38,16 +38,27 @@ type sandbox struct {
 type Broker struct {
 	engine     Engine
 	image      string
+	owner      string
 	mu         sync.Mutex
 	byHandle   map[string]*sandbox
 	byCampaign map[int64]string
 }
 
 func New(engine Engine, image string) (*Broker, error) {
-	if engine == nil || !pinnedImage.MatchString(image) {
-		return nil, errors.New("sandbox broker requires an engine and pinned image digest")
+	owner, err := randomHex(16)
+	if err != nil {
+		return nil, err
 	}
-	return &Broker{engine: engine, image: image, byHandle: make(map[string]*sandbox), byCampaign: make(map[int64]string)}, nil
+	return NewWithOwner(engine, image, owner)
+}
+
+// NewWithOwner binds every sandbox to a durable, installation-specific owner
+// identity supplied by the trusted broker service, never by an agent request.
+func NewWithOwner(engine Engine, image, owner string) (*Broker, error) {
+	if engine == nil || !pinnedImage.MatchString(image) || !brokerOwner.MatchString(owner) {
+		return nil, errors.New("sandbox broker requires an engine, pinned image digest and valid owner ID")
+	}
+	return &Broker{engine: engine, image: image, owner: owner, byHandle: make(map[string]*sandbox), byCampaign: make(map[int64]string)}, nil
 }
 
 func randomHex(n int) (string, error) {
@@ -83,7 +94,7 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 	if err != nil {
 		return "", err
 	}
-	spec := Spec{Name: "artex-campaign-" + nameID, Image: b.image, Token: token}
+	spec := Spec{Name: "artex-campaign-" + nameID, Image: b.image, Token: token, Owner: b.owner}
 	container, err := b.engine.Create(ctx, spec)
 	if err != nil {
 		return "", fmt.Errorf("create sandbox: %w", err)

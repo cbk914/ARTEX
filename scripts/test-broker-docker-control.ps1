@@ -86,14 +86,19 @@ try {
 
     $children = @(NewSandboxIDs $baseline)
     if ($children.Count -ne 2) { throw "expected two owned sandboxes; found $($children.Count)" }
+    $owners = @()
     foreach ($id in $children) {
         $info = @(docker inspect $id | ConvertFrom-Json)[0]
+        $owner = $info.Config.Labels.'org.artex.sandbox.owner'
+        if ($owner -notmatch '^[a-f0-9]{32}$') { throw "sandbox $id lacks a valid broker owner" }
+        $owners += $owner
         if ($info.HostConfig.NetworkMode -ne 'none' -or -not $info.HostConfig.ReadonlyRootfs -or
             $info.Config.User -ne '10001:10001' -or
             @($info.Mounts | Where-Object Type -ne 'tmpfs').Count -ne 0) {
             throw "sandbox $id violated isolation policy"
         }
     }
+    if (@($owners | Select-Object -Unique).Count -ne 1) { throw 'campaign sandboxes have different broker owners' }
 
     Invoke-Broker 'DELETE' "/v1/sandboxes/$($first.handle)" | Out-Null
     if (@(NewSandboxIDs $baseline).Count -ne 1) { throw 'explicit removal left an unexpected sandbox count' }

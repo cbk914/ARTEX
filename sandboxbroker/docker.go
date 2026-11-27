@@ -23,8 +23,10 @@ const (
 var containerID = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var containerName = regexp.MustCompile(`^artex-campaign-[a-f0-9]{32}$`)
 var ownershipToken = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var brokerOwner = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 const ownershipLabel = "org.artex.sandbox.token"
+const ownerLabel = "org.artex.sandbox.owner"
 
 type commandRunner interface {
 	Run(context.Context, ...string) ([]byte, error)
@@ -146,11 +148,11 @@ func (d *DockerEngine) CheckImage(ctx context.Context, image string) error {
 }
 
 func (d *DockerEngine) Create(ctx context.Context, spec Spec) (string, error) {
-	if !containerName.MatchString(spec.Name) || !pinnedImage.MatchString(spec.Image) || !ownershipToken.MatchString(spec.Token) {
+	if !containerName.MatchString(spec.Name) || !pinnedImage.MatchString(spec.Image) || !ownershipToken.MatchString(spec.Token) || !brokerOwner.MatchString(spec.Owner) {
 		return "", errors.New("invalid sandbox spec")
 	}
 	args := []string{
-		"create", "--pull=never", "--name", spec.Name, "--label=" + ownershipLabel + "=" + spec.Token,
+		"create", "--pull=never", "--name", spec.Name, "--label=" + ownershipLabel + "=" + spec.Token, "--label=" + ownerLabel + "=" + spec.Owner,
 		"--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
 		"--user=" + sandboxUser, "--memory=256m", "--memory-swap=256m", "--cpus=0.5", "--pids-limit=64",
 		"--ulimit=nofile=1024:1024",
@@ -187,7 +189,7 @@ func (d *DockerEngine) cleanupOwned(spec Spec) error {
 	if err != nil {
 		return fmt.Errorf("inspect failed creation %s: %w", spec.Name, err)
 	}
-	if info.Name != "/"+spec.Name || !containerID.MatchString(info.ID) || info.Config.Labels[ownershipLabel] != spec.Token {
+	if info.Name != "/"+spec.Name || !containerID.MatchString(info.ID) || info.Config.Labels[ownershipLabel] != spec.Token || info.Config.Labels[ownerLabel] != spec.Owner {
 		return nil // A colliding or replaced name is not ours.
 	}
 	_, err = d.runner.Run(ctx, "rm", "-f", "-v", info.ID)
@@ -295,7 +297,7 @@ func (d *DockerEngine) Verify(ctx context.Context, id string, spec Spec) error {
 		return err
 	}
 	h := info.HostConfig
-	if info.ID != id || info.Name != "/"+spec.Name || info.Config.Labels[ownershipLabel] != spec.Token || info.Image != image.ID || !info.State.Running || info.Config.User != sandboxUser ||
+	if info.ID != id || info.Name != "/"+spec.Name || info.Config.Labels[ownershipLabel] != spec.Token || info.Config.Labels[ownerLabel] != spec.Owner || info.Image != image.ID || !info.State.Running || info.Config.User != sandboxUser ||
 		h.NetworkMode != "none" || !privateNamespaceMode(h.PidMode) || !privateNamespaceMode(h.IpcMode) ||
 		!privateNamespaceMode(h.UTSMode) || !privateNamespaceMode(h.CgroupnsMode) || !privateNamespaceMode(h.UsernsMode) ||
 		!h.ReadonlyRootfs || h.Privileged || len(h.CapAdd) != 0 || !contains(h.CapDrop, "ALL") ||

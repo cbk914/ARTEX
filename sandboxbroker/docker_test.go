@@ -35,13 +35,13 @@ func TestDockerCreateUsesFixedPolicy(t *testing.T) {
 	id := strings.Repeat("a", 64)
 	r := &recordingRunner{responses: map[string][]byte{"create": []byte(id + "\n")}}
 	d := &DockerEngine{runner: r}
-	spec := Spec{Name: "artex-campaign-" + strings.Repeat("b", 32), Image: testImage, Token: strings.Repeat("c", 64)}
+	spec := Spec{Name: "artex-campaign-" + strings.Repeat("b", 32), Image: testImage, Token: strings.Repeat("c", 64), Owner: strings.Repeat("f", 32)}
 	got, err := d.Create(context.Background(), spec)
 	if err != nil || got != id {
 		t.Fatalf("create: %q %v", got, err)
 	}
 	args := r.calls[0]
-	for _, flag := range []string{"--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true", "--user=10001:10001", "--memory=256m", "--memory-swap=256m", "--cpus=0.5", "--pids-limit=64", "--label=" + ownershipLabel + "=" + spec.Token} {
+	for _, flag := range []string{"--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true", "--user=10001:10001", "--memory=256m", "--memory-swap=256m", "--cpus=0.5", "--pids-limit=64", "--label=" + ownershipLabel + "=" + spec.Token, "--label=" + ownerLabel + "=" + spec.Owner} {
 		found := false
 		for _, arg := range args {
 			if arg == flag {
@@ -81,17 +81,18 @@ func TestDockerRejectsUnexpectedImageVolume(t *testing.T) {
 
 func TestDockerCreateNameConflictDoesNotRemoveForeignContainer(t *testing.T) {
 	id := strings.Repeat("e", 64)
-	spec := Spec{Name: "artex-campaign-" + strings.Repeat("b", 32), Image: testImage, Token: strings.Repeat("c", 64)}
+	spec := Spec{Name: "artex-campaign-" + strings.Repeat("b", 32), Image: testImage, Token: strings.Repeat("c", 64), Owner: strings.Repeat("f", 32)}
 	for _, tc := range []struct {
-		name, label string
-		wantRemove  bool
+		name, label, owner string
+		wantRemove         bool
 	}{
-		{"foreign", strings.Repeat("d", 64), false},
-		{"owned", spec.Token, true},
+		{"foreign token", strings.Repeat("d", 64), spec.Owner, false},
+		{"foreign owner", spec.Token, strings.Repeat("e", 32), false},
+		{"owned", spec.Token, spec.Owner, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &recordingRunner{failure: "create", responses: map[string][]byte{"inspect": jsonArray(t, map[string]any{
-				"Id": id, "Name": "/" + spec.Name, "Config": map[string]any{"Labels": map[string]string{ownershipLabel: tc.label}},
+				"Id": id, "Name": "/" + spec.Name, "Config": map[string]any{"Labels": map[string]string{ownershipLabel: tc.label, ownerLabel: tc.owner}},
 			})}}
 			d := &DockerEngine{runner: r}
 			if _, err := d.Create(context.Background(), spec); err == nil {
@@ -115,10 +116,10 @@ func TestDockerCreateNameConflictDoesNotRemoveForeignContainer(t *testing.T) {
 
 func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 	id := strings.Repeat("b", 64)
-	spec := Spec{Name: "artex-campaign-" + strings.Repeat("c", 32), Image: testImage, Token: strings.Repeat("d", 64)}
+	spec := Spec{Name: "artex-campaign-" + strings.Repeat("c", 32), Image: testImage, Token: strings.Repeat("d", 64), Owner: strings.Repeat("f", 32)}
 	base := map[string]any{
 		"Id": id, "Name": "/" + spec.Name, "Image": testImage,
-		"State": map[string]any{"Running": true}, "Config": map[string]any{"User": sandboxUser, "Labels": map[string]string{ownershipLabel: spec.Token}, "Env": []string{"HOME=/campaign", "TMPDIR=/tmp", "XDG_CONFIG_HOME=/campaign/.config", "XDG_CACHE_HOME=/campaign/.cache", "XDG_DATA_HOME=/campaign/.local/share", "XDG_STATE_HOME=/campaign/.local/state", "XDG_RUNTIME_DIR=/campaign/.run"}},
+		"State": map[string]any{"Running": true}, "Config": map[string]any{"User": sandboxUser, "Labels": map[string]string{ownershipLabel: spec.Token, ownerLabel: spec.Owner}, "Env": []string{"HOME=/campaign", "TMPDIR=/tmp", "XDG_CONFIG_HOME=/campaign/.config", "XDG_CACHE_HOME=/campaign/.cache", "XDG_DATA_HOME=/campaign/.local/share", "XDG_STATE_HOME=/campaign/.local/state", "XDG_RUNTIME_DIR=/campaign/.run"}},
 		"HostConfig": map[string]any{"NetworkMode": "none", "ReadonlyRootfs": true, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges:true"}, "Memory": memoryLimit, "MemorySwap": memoryLimit, "PidsLimit": pidLimit, "NanoCpus": nanoCPUs,
 			"Tmpfs": map[string]string{"/tmp": "rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001,mode=0700", "/campaign": "rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700", "/app/data": "rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700", "/app/keys": "rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700"}},
 		"Mounts":          []map[string]string{},
@@ -129,6 +130,13 @@ func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 	if err := d.Verify(context.Background(), id, spec); err != nil {
 		t.Fatalf("valid policy rejected: %v", err)
 	}
+	labels := base["Config"].(map[string]any)["Labels"].(map[string]string)
+	labels[ownerLabel] = strings.Repeat("e", 32)
+	r.responses["inspect"] = jsonArray(t, base)
+	if err := d.Verify(context.Background(), id, spec); err == nil {
+		t.Fatal("accepted foreign broker owner")
+	}
+	labels[ownerLabel] = spec.Owner
 	base["Mounts"] = append(base["Mounts"].([]map[string]string), map[string]string{"Type": "bind", "Destination": "/host"})
 	r.responses["inspect"] = jsonArray(t, base)
 	if err := d.Verify(context.Background(), id, spec); err == nil {

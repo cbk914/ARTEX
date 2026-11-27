@@ -34,6 +34,8 @@ The staged Linux broker control service accepts only create, run and remove on a
 
 The scratch broker image was rebuilt after this socket validator change and the real Docker-backed acceptance script passed again. The validation image was removed. Windows behavior remains cross-compiled and source-checked, without a runtime test.
 
+The Docker adapter now labels each child with both a per-container token and a random per-broker owner. Unit regressions reject cleanup and policy verification when the owner differs, even with a matching token. `go test -race ./sandboxbroker ./cmd/artex-sandbox-broker -count=1`, `go vet` and Windows cross-compilation passed in an isolated Go image. The scratch broker image rebuilt and the Docker-backed acceptance passed with two child containers sharing the owner label; all disposable resources were removed. The owner is process-local at this stage, so crash recovery and durable ownership are still unproven.
+
 ## Cross-cutting global asset deletion authorization
 
 Local remediation commit: `8634d12`.

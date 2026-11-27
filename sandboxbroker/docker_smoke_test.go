@@ -82,7 +82,11 @@ func TestDockerNameConflictSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.Create(ctx, Spec{Name: name, Image: image, Token: token}); err == nil {
+	owner, err := randomHex(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Create(ctx, Spec{Name: name, Image: image, Token: token, Owner: owner}); err == nil {
 		t.Fatal("name collision unexpectedly created a sandbox")
 	}
 	if _, err := engine.runner.Run(ctx, "inspect", id); err != nil {
