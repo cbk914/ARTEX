@@ -25,6 +25,7 @@ type Engine interface {
 	Start(context.Context, string) error
 	Verify(context.Context, string, Spec) error
 	Exec(context.Context, string, string) (string, error)
+	PutArtifact(context.Context, string, string, []byte) error
 	Remove(context.Context, string) error
 }
 
@@ -253,4 +254,32 @@ func (b *Broker) Run(ctx context.Context, handle, command string) (string, error
 		return output, errors.Join(err, runCtx.Err(), b.retireLocked(handle, s))
 	}
 	return output, err
+}
+
+// PutArtifact publishes one immutable, root-owned file to a campaign sandbox.
+// Only a separately authorized control-plane caller may use a handle.
+func (b *Broker) PutArtifact(ctx context.Context, handle, name string, data []byte) error {
+	if !validArtifactName(name) || len(data) == 0 || len(data) > maxArtifactBytes {
+		return errors.New("invalid sandbox artifact")
+	}
+	s, err := b.lockSandbox(handle)
+	if err != nil {
+		return err
+	}
+	defer s.opMu.Unlock()
+	if s.poisoned {
+		return errors.New("sandbox is unsafe and requires removal")
+	}
+	putCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	if err := b.engine.Verify(putCtx, s.container, s.spec); err != nil {
+		return errors.Join(fmt.Errorf("verify sandbox before artifact: %w", err), b.retireLocked(handle, s))
+	}
+	if err := b.engine.PutArtifact(putCtx, s.container, name, data); err != nil {
+		return errors.Join(fmt.Errorf("publish sandbox artifact: %w", err), b.retireLocked(handle, s))
+	}
+	if err := putCtx.Err(); err != nil {
+		return errors.Join(err, b.retireLocked(handle, s))
+	}
+	return nil
 }

@@ -20,7 +20,7 @@ function NewSandboxIDs([string[]]$before) {
         Where-Object { $_ -and $_ -notin $before })
 }
 
-function Invoke-Broker([string]$method, [string]$path, [string]$body = '') {
+function Invoke-Broker([string]$method, [string]$path, [string]$body = '', [string]$contentType = 'application/json') {
     $dockerArgs = @('run', '--rm', '--pull=never', '--network', 'none', '--user', '0:0',
         '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges:true',
         '--mount', "type=volume,src=$socketVolume,dst=/run/artex-broker",
@@ -28,8 +28,8 @@ function Invoke-Broker([string]$method, [string]$path, [string]$body = '') {
         '--tmpfs', '/app/keys:rw,nosuid,nodev,noexec,size=1m',
         '--entrypoint', 'curl', $SandboxImage,
         '--silent', '--show-error', '--fail', '--unix-socket', $socket,
-        '--request', $method, '--header', 'Content-Type: application/json')
-    if ($body) { $dockerArgs += @('--data', $body) }
+        '--request', $method, '--header', "Content-Type: $contentType")
+    if ($body) { $dockerArgs += @('--data-binary', $body) }
     $dockerArgs += "http://broker$path"
     $result = docker @dockerArgs
     Assert-Exit "broker $method $path"
@@ -83,6 +83,12 @@ try {
     if ($run.output -ne 'broker-integration') { throw "sandbox command returned unexpected output: $($run.output)" }
     $second = Invoke-Broker 'POST' '/v1/sandboxes' '{"campaign_id":72}' | ConvertFrom-Json
     if ($second.handle.Length -ne 64 -or $second.handle -eq $first.handle) { throw 'second campaign handle invalid' }
+    $artifact = Invoke-Broker 'PUT' "/v1/sandboxes/$($first.handle)/artifacts/fixture.txt" 'ARTIFACT_A' 'application/octet-stream' | ConvertFrom-Json
+    if ($artifact.sha256 -ne '227bd725c586586d62c3c78f8bb304342328410324107a8580432f3345b29301') { throw 'broker returned unexpected artifact digest' }
+    $read = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" '{"command":"cat /artifacts/fixture.txt && test ! -w /artifacts/fixture.txt"}' | ConvertFrom-Json
+    if ($read.output -ne 'ARTIFACT_A') { throw 'delivered artifact unreadable or writable by executor' }
+    $other = Invoke-Broker 'POST' "/v1/sandboxes/$($second.handle)/run" '{"command":"test ! -e /artifacts/fixture.txt"}' | ConvertFrom-Json
+    if ($null -eq $other.output) { throw 'other campaign artifact check failed' }
 
     $children = @(NewSandboxIDs $baseline)
     if ($children.Count -ne 2) { throw "expected two owned sandboxes; found $($children.Count)" }
@@ -111,7 +117,7 @@ try {
         --tmpfs /app/keys:rw,nosuid,nodev,noexec,size=1m `
         --entrypoint /bin/sh $SandboxImage -c "test ! -e $socket"
     Assert-Exit 'broker socket cleanup'
-    Write-Output 'PASS: Docker-backed broker created, ran and removed isolated sandboxes; graceful stop removed the remaining sandbox and socket.'
+    Write-Output 'PASS: Docker-backed broker created isolated sandboxes, delivered a private artifact, ran commands, and removed sandboxes and socket.'
 } finally {
     if ($brokerCreated) { docker stop --time=80 $brokerName 2>$null | Out-Null }
     docker rm -f -v $brokerName 2>$null | Out-Null

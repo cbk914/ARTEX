@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +14,16 @@ type recordingRunner struct {
 	calls     [][]string
 	responses map[string][]byte
 	failure   string
+	input     []byte
+}
+
+func (r *recordingRunner) RunInput(ctx context.Context, input io.Reader, args ...string) ([]byte, error) {
+	data, err := io.ReadAll(input)
+	if err != nil {
+		return nil, err
+	}
+	r.input = data
+	return r.Run(ctx, args...)
 }
 
 func (r *recordingRunner) Run(_ context.Context, args ...string) ([]byte, error) {
@@ -66,6 +77,21 @@ func TestDockerCreateUsesFixedPolicy(t *testing.T) {
 	}
 	if args[len(args)-3] != testImage || args[len(args)-2] != "-c" || !strings.Contains(args[len(args)-1], "exec sleep infinity") {
 		t.Fatal("unexpected image or command")
+	}
+}
+
+func TestDockerArtifactStagesUnderPrivateDirectory(t *testing.T) {
+	r := &recordingRunner{responses: map[string][]byte{}}
+	d := &DockerEngine{runner: r}
+	id := strings.Repeat("a", 64)
+	if err := d.PutArtifact(context.Background(), id, "fixture.txt", []byte("synthetic")); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.calls) != 1 || len(r.calls[0]) != 10 || r.calls[0][0] != "exec" || r.calls[0][1] != "-i" || r.calls[0][2] != "--user=0:0" || r.calls[0][3] != id {
+		t.Fatalf("unexpected Docker transfer: %v", r.calls)
+	}
+	if string(r.input) != "synthetic" || !strings.HasPrefix(r.calls[0][8], "/artifacts/.incoming/") || r.calls[0][9] != "/artifacts/fixture.txt" {
+		t.Fatalf("unsafe artifact destination: %v", r.calls[0])
 	}
 }
 

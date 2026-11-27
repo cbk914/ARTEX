@@ -3,7 +3,9 @@ package sandboxbroker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -115,5 +117,48 @@ func TestBrokerHTTPAcceptsEncodedMaximumCommand(t *testing.T) {
 	got := brokerRequest(t, handler, http.MethodPost, "/v1/sandboxes/"+handle+"/run", string(body))
 	if got.Code != http.StatusOK || engine.executed != 1 {
 		t.Fatalf("valid maximum command rejected: HTTP %d", got.Code)
+	}
+}
+
+func TestBrokerHTTPArtifactAdmissionAndDigest(t *testing.T) {
+	engine := &fakeEngine{}
+	broker, _ := New(engine, testImage)
+	handler, _ := newHTTPHandler(broker)
+	handle, err := broker.Create(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/sandboxes/" + handle + "/artifacts/fixture.txt"
+	put := func(path, contentType string, body []byte) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body))
+		request.Header.Set("Content-Type", contentType)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	for _, tc := range []struct {
+		path, contentType string
+		body              []byte
+	}{
+		{path, "application/json", []byte("data")},
+		{path, "application/octet-stream", nil},
+		{"/v1/sandboxes/" + handle + "/artifacts/-option", "application/octet-stream", []byte("data")},
+		{path, "application/octet-stream", bytes.Repeat([]byte("x"), maxArtifactBytes+1)},
+	} {
+		if got := put(tc.path, tc.contentType, tc.body); got.Code != http.StatusBadRequest {
+			t.Errorf("accepted invalid artifact: %d", got.Code)
+		}
+	}
+	if engine.delivered != 0 {
+		t.Fatal("invalid request reached engine")
+	}
+	got := put(path, "application/octet-stream", []byte("synthetic"))
+	var response struct{ SHA256 string }
+	if err := json.Unmarshal(got.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("synthetic"))
+	if got.Code != http.StatusCreated || response.SHA256 != fmt.Sprintf("%x", digest) || engine.delivered != 1 {
+		t.Fatalf("artifact response: %d %s delivered=%d", got.Code, got.Body.String(), engine.delivered)
 	}
 }

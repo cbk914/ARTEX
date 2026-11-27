@@ -1,10 +1,12 @@
 package sandboxbroker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -30,6 +32,7 @@ const ownerLabel = "org.artex.sandbox.owner"
 
 type commandRunner interface {
 	Run(context.Context, ...string) ([]byte, error)
+	RunInput(context.Context, io.Reader, ...string) ([]byte, error)
 }
 
 type cliRunner struct{ path string }
@@ -66,7 +69,16 @@ func (b *boundedOutput) result() ([]byte, bool) {
 }
 
 func (r cliRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
+	return r.run(ctx, nil, args...)
+}
+
+func (r cliRunner) RunInput(ctx context.Context, input io.Reader, args ...string) ([]byte, error) {
+	return r.run(ctx, input, args...)
+}
+
+func (r cliRunner) run(ctx context.Context, input io.Reader, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, r.path, args...)
+	cmd.Stdin = input
 	output := &boundedOutput{kill: func() {
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
@@ -86,6 +98,24 @@ func (r cliRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 		return data, fmt.Errorf("docker command failed: %w: %s", err, strings.TrimSpace(string(message)))
 	}
 	return data, nil
+}
+
+// PutArtifact streams bytes to a fixed root command inside the sandbox's
+// private tmpfs. The executor cannot access the stage or a partial file.
+func (d *DockerEngine) PutArtifact(ctx context.Context, id, name string, data []byte) error {
+	if !containerID.MatchString(id) || !validArtifactName(name) || len(data) == 0 || len(data) > maxArtifactBytes {
+		return errors.New("invalid sandbox artifact")
+	}
+	stageID, err := randomHex(16)
+	if err != nil {
+		return err
+	}
+	stageName := ".incoming/" + stageID
+	// Docker cp rejects read-only container roots even for tmpfs destinations.
+	// The trusted command accepts artifact bytes only on stdin; no caller data
+	// becomes shell source. The final rename is atomic within one tmpfs.
+	_, err = d.runner.RunInput(ctx, bytes.NewReader(data), "exec", "-i", "--user=0:0", id, "/bin/sh", "-c", "umask 077 && mkdir -p -m 0700 /artifacts/.incoming && test ! -e \"$2\" && cat > \"$1\" && chmod 0444 \"$1\" && mv \"$1\" \"$2\"", "--", "/artifacts/"+stageName, "/artifacts/"+name)
+	return err
 }
 
 // DockerEngine controls disposable containers from a trusted host process.

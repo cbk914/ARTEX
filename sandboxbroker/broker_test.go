@@ -12,8 +12,8 @@ import (
 const testImage = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 type fakeEngine struct {
-	created, started, verified, executed, removed int
-	failure                                       string
+	created, started, verified, executed, delivered, removed int
+	failure                                                  string
 }
 
 type testJournal struct {
@@ -117,12 +117,52 @@ func (f *fakeEngine) Exec(ctx context.Context, _ string, command string) (string
 	}
 	return "ran: " + command, nil
 }
+func (f *fakeEngine) PutArtifact(_ context.Context, _, _ string, _ []byte) error {
+	f.delivered++
+	if f.failure == "artifact" {
+		return errors.New("artifact failure")
+	}
+	return nil
+}
 func (f *fakeEngine) Remove(context.Context, string) error {
 	f.removed++
 	if f.failure == "remove" {
 		return errors.New("remove failure")
 	}
 	return nil
+}
+
+func TestBrokerArtifactDeliveryRejectsUnsafeInputAndRetiresFailure(t *testing.T) {
+	engine := &fakeEngine{}
+	broker, err := New(engine, testImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := broker.Create(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"../escape", ".", "..", "nested/file", "-option"} {
+		if err := broker.PutArtifact(context.Background(), handle, name, []byte("data")); err == nil {
+			t.Errorf("accepted unsafe artifact name %q", name)
+		}
+	}
+	if engine.delivered != 0 {
+		t.Fatal("unsafe name reached container engine")
+	}
+	if err := broker.PutArtifact(context.Background(), handle, "evidence.txt", []byte("data")); err != nil || engine.delivered != 1 {
+		t.Fatalf("valid delivery: delivered=%d err=%v", engine.delivered, err)
+	}
+	engine.failure = "artifact"
+	if err := broker.PutArtifact(context.Background(), handle, "next.txt", []byte("data")); err == nil {
+		t.Fatal("accepted failed delivery")
+	}
+	if engine.removed != 1 {
+		t.Fatal("failed delivery did not retire sandbox")
+	}
+	if _, err := broker.Run(context.Background(), handle, "true"); err == nil {
+		t.Fatal("retired handle remained usable")
+	}
 }
 
 func TestBrokerLifecycle(t *testing.T) {

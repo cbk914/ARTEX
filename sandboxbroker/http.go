@@ -2,6 +2,8 @@ package sandboxbroker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -66,6 +68,28 @@ func newHTTPHandler(broker *Broker) (http.Handler, error) {
 		writeBrokerJSON(w, http.StatusOK, struct {
 			Output string `json:"output"`
 		}{output})
+	})
+	mux.HandleFunc("PUT /v1/sandboxes/{handle}/artifacts/{name}", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if !validArtifactName(name) || r.Header.Get("Content-Type") != "application/octet-stream" || r.ContentLength > maxArtifactBytes {
+			writeBrokerError(w, http.StatusBadRequest, "invalid artifact")
+			return
+		}
+		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxArtifactBytes+1))
+		if err != nil || len(data) == 0 || len(data) > maxArtifactBytes {
+			writeBrokerError(w, http.StatusBadRequest, "invalid artifact")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 50*time.Second)
+		defer cancel()
+		if err := broker.PutArtifact(ctx, r.PathValue("handle"), name, data); err != nil {
+			writeBrokerError(w, http.StatusServiceUnavailable, "sandbox artifact unavailable")
+			return
+		}
+		digest := sha256.Sum256(data)
+		writeBrokerJSON(w, http.StatusCreated, struct {
+			SHA256 string `json:"sha256"`
+		}{hex.EncodeToString(digest[:])})
 	})
 	mux.HandleFunc("DELETE /v1/sandboxes/{handle}", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)

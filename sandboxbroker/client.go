@@ -3,6 +3,8 @@ package sandboxbroker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,6 +95,29 @@ func (c *Client) Remove(ctx context.Context, handle string) error {
 	return err
 }
 
+// PutArtifact sends one bounded immutable artifact to an authorized sandbox.
+// The caller must already have bound the handle to a live campaign grant.
+func (c *Client) PutArtifact(ctx context.Context, handle, name string, data []byte) (string, error) {
+	if !ownershipToken.MatchString(handle) || !validArtifactName(name) || len(data) == 0 || len(data) > maxArtifactBytes {
+		return "", errors.New("invalid broker artifact request")
+	}
+	response, err := c.doRequest(ctx, http.MethodPut, "/v1/sandboxes/"+handle+"/artifacts/"+name, bytes.NewReader(data), "application/octet-stream", http.StatusCreated)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		SHA256 string `json:"sha256"`
+	}
+	if err := json.Unmarshal(response, &result); err != nil {
+		return "", errors.New("broker returned invalid artifact digest")
+	}
+	local := sha256.Sum256(data)
+	if result.SHA256 != hex.EncodeToString(local[:]) {
+		return "", errors.New("broker returned mismatched artifact digest")
+	}
+	return result.SHA256, nil
+}
+
 func (c *Client) request(ctx context.Context, method, path string, body any, wantStatus int) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {
@@ -102,12 +127,20 @@ func (c *Client) request(ctx context.Context, method, path string, body any, wan
 		}
 		reader = bytes.NewReader(data)
 	}
+	contentType := ""
+	if body != nil {
+		contentType = "application/json"
+	}
+	return c.doRequest(ctx, method, path, reader, contentType, wantStatus)
+}
+
+func (c *Client) doRequest(ctx context.Context, method, path string, reader io.Reader, contentType string, wantStatus int) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, method, "http://broker"+path, reader)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
