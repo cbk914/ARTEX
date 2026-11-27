@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Autumn-27/artex/sandboxbroker"
 )
@@ -34,11 +35,23 @@ func main() {
 		os.Exit(1)
 	}
 	defer identity.Close()
+	journal, err := identity.OpenJournal()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 2*time.Minute)
+	err = engine.RecoverRecorded(recoveryCtx, journal, image)
+	cancelRecovery()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if err := identity.PrepareSocket(socketPath); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	broker, err := sandboxbroker.NewWithOwner(engine, image, identity.Owner)
+	broker, err := sandboxbroker.NewWithJournal(engine, image, identity.Owner, journal)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

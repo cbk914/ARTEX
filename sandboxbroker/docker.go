@@ -274,6 +274,10 @@ func contains(values []string, target string) bool {
 func privateNamespaceMode(mode string) bool { return mode == "" || mode == "private" }
 
 func (d *DockerEngine) Verify(ctx context.Context, id string, spec Spec) error {
+	return d.verify(ctx, id, spec, true)
+}
+
+func (d *DockerEngine) verify(ctx context.Context, id string, spec Spec, requireRunning bool) error {
 	if !containerID.MatchString(id) {
 		return errors.New("invalid container ID")
 	}
@@ -297,7 +301,7 @@ func (d *DockerEngine) Verify(ctx context.Context, id string, spec Spec) error {
 		return err
 	}
 	h := info.HostConfig
-	if info.ID != id || info.Name != "/"+spec.Name || info.Config.Labels[ownershipLabel] != spec.Token || info.Config.Labels[ownerLabel] != spec.Owner || info.Image != image.ID || !info.State.Running || info.Config.User != sandboxUser ||
+	if info.ID != id || info.Name != "/"+spec.Name || info.Config.Labels[ownershipLabel] != spec.Token || info.Config.Labels[ownerLabel] != spec.Owner || info.Image != image.ID || (requireRunning && !info.State.Running) || info.Config.User != sandboxUser ||
 		h.NetworkMode != "none" || !privateNamespaceMode(h.PidMode) || !privateNamespaceMode(h.IpcMode) ||
 		!privateNamespaceMode(h.UTSMode) || !privateNamespaceMode(h.CgroupnsMode) || !privateNamespaceMode(h.UsernsMode) ||
 		!h.ReadonlyRootfs || h.Privileged || len(h.CapAdd) != 0 || !contains(h.CapDrop, "ALL") ||

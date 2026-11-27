@@ -28,6 +28,13 @@ type Engine interface {
 	Remove(context.Context, string) error
 }
 
+// Journal durably records creation intent before Docker can create a sandbox.
+// A recovery service must inspect these records before accepting requests.
+type Journal interface {
+	Record(Spec) error
+	Forget(Spec) error
+}
+
 type sandbox struct {
 	campaignID int64
 	container  string
@@ -39,6 +46,7 @@ type Broker struct {
 	engine     Engine
 	image      string
 	owner      string
+	journal    Journal
 	mu         sync.Mutex
 	byHandle   map[string]*sandbox
 	byCampaign map[int64]string
@@ -55,10 +63,16 @@ func New(engine Engine, image string) (*Broker, error) {
 // NewWithOwner binds every sandbox to a durable, installation-specific owner
 // identity supplied by the trusted broker service, never by an agent request.
 func NewWithOwner(engine Engine, image, owner string) (*Broker, error) {
+	return NewWithJournal(engine, image, owner, nil)
+}
+
+// NewWithJournal is used by the Linux service after its private journal has
+// been recovered. Tests and in-memory prototypes may omit a journal.
+func NewWithJournal(engine Engine, image, owner string, journal Journal) (*Broker, error) {
 	if engine == nil || !pinnedImage.MatchString(image) || !brokerOwner.MatchString(owner) {
 		return nil, errors.New("sandbox broker requires an engine, pinned image digest and valid owner ID")
 	}
-	return &Broker{engine: engine, image: image, owner: owner, byHandle: make(map[string]*sandbox), byCampaign: make(map[int64]string)}, nil
+	return &Broker{engine: engine, image: image, owner: owner, journal: journal, byHandle: make(map[string]*sandbox), byCampaign: make(map[int64]string)}, nil
 }
 
 func randomHex(n int) (string, error) {
@@ -95,6 +109,11 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 		return "", err
 	}
 	spec := Spec{Name: "artex-campaign-" + nameID, Image: b.image, Token: token, Owner: b.owner}
+	if b.journal != nil {
+		if err := b.journal.Record(spec); err != nil {
+			return "", fmt.Errorf("record sandbox intent: %w", err)
+		}
+	}
 	container, err := b.engine.Create(ctx, spec)
 	if err != nil {
 		return "", fmt.Errorf("create sandbox: %w", err)
@@ -106,6 +125,8 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 			defer cancel()
 			if cleanupErr := b.engine.Remove(cleanupCtx, container); cleanupErr != nil {
 				err = errors.Join(err, fmt.Errorf("remove failed sandbox %s: %w", container, cleanupErr))
+			} else if b.journal != nil {
+				err = errors.Join(err, b.journal.Forget(spec))
 			}
 		}
 	}()
@@ -135,11 +156,15 @@ func (b *Broker) Remove(ctx context.Context, handle string) error {
 		s.poisoned = true
 		return fmt.Errorf("remove sandbox: %w", err)
 	}
+	var journalErr error
+	if b.journal != nil {
+		journalErr = b.journal.Forget(s.spec)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.byHandle, handle)
 	delete(b.byCampaign, s.campaignID)
-	return nil
+	return journalErr
 }
 
 // Shutdown removes every sandbox still owned by this broker after its control
@@ -191,13 +216,17 @@ func (b *Broker) retireLocked(handle string, s *sandbox) error {
 	if err := b.engine.Remove(cleanupCtx, s.container); err != nil {
 		return fmt.Errorf("retire unsafe sandbox: %w", err)
 	}
+	var journalErr error
+	if b.journal != nil {
+		journalErr = b.journal.Forget(s.spec)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.byHandle[handle] == s {
 		delete(b.byHandle, handle)
 		delete(b.byCampaign, s.campaignID)
 	}
-	return nil
+	return journalErr
 }
 
 // Run executes a bounded shell command through an opaque handle. The caller must

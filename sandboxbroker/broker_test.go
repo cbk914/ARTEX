@@ -16,6 +16,63 @@ type fakeEngine struct {
 	failure                                       string
 }
 
+type testJournal struct {
+	recorded []Spec
+	forgot   []Spec
+	fail     bool
+}
+
+func (j *testJournal) Record(spec Spec) error {
+	if j.fail {
+		return errors.New("journal unavailable")
+	}
+	j.recorded = append(j.recorded, spec)
+	return nil
+}
+
+func (j *testJournal) Forget(spec Spec) error {
+	j.forgot = append(j.forgot, spec)
+	return nil
+}
+
+type journalCheckingEngine struct {
+	*fakeEngine
+	journal *testJournal
+}
+
+func (e *journalCheckingEngine) Create(ctx context.Context, spec Spec) (string, error) {
+	if len(e.journal.recorded) != 1 || e.journal.recorded[0] != spec {
+		return "", errors.New("Docker create preceded durable intent")
+	}
+	return e.fakeEngine.Create(ctx, spec)
+}
+
+func TestBrokerJournalsBeforeCreateAndForgetsAfterRemove(t *testing.T) {
+	j := &testJournal{fail: true}
+	e := &journalCheckingEngine{fakeEngine: &fakeEngine{}, journal: j}
+	b, err := NewWithJournal(e, testImage, strings.Repeat("f", 32), j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Create(context.Background(), 1); err == nil || e.created != 0 {
+		t.Fatalf("created without journal: err=%v count=%d", err, e.created)
+	}
+	j.fail = false
+	handle, err := b.Create(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(j.forgot) != 0 {
+		t.Fatal("forgot intent before container removal")
+	}
+	if err := b.Remove(context.Background(), handle); err != nil {
+		t.Fatal(err)
+	}
+	if e.removed != 1 || len(j.forgot) != 1 || j.forgot[0] != j.recorded[0] {
+		t.Fatalf("journal lifecycle mismatch: removed=%d, journal=%+v", e.removed, j)
+	}
+}
+
 func (f *fakeEngine) CheckImage(context.Context, string) error {
 	if f.failure == "image" {
 		return errors.New("image failure")
