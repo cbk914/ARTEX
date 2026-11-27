@@ -24,6 +24,8 @@ For each validated finding add root cause, affected files, remediation, test com
 
 A pre-fix synthetic inspect regression showed `DockerEngine.Verify` accepted host namespace modes, device access, supplementary groups, extra hosts, links, inherited volumes, port bindings and an added `seccomp=unconfined` security option. The fixed verifier rejects these deviations from the broker's fixed container policy. `go test -race ./sandboxbroker -count=1` and `go vet ./sandboxbroker` passed in a network-disconnected Go 1.26.11 container. A cross-compiled Windows test binary then passed the opt-in `TestDockerBrokerSmoke` against the local pinned ARTEX image on Docker Desktop and removed its disposable sandbox. No broker-labeled container remained. This is a safer host-side prototype, not deployed campaign isolation; ARTEX-001 and ARTEX-005 stay open.
 
+The staged Linux broker control service accepts only create, run and remove on a Unix socket beneath root-controlled directories. Tests check opaque handles, strict/size-bounded JSON, method rejection, generic error responses, socket mode 0600, root client access, non-root peer rejection by `SO_PEERCRED`, registered-sandbox removal and socket removal on graceful shutdown. `go test -race ./sandboxbroker ./cmd/artex-sandbox-broker -count=1`, `go vet` for both packages and a Windows fail-closed cross-build passed in a network-disconnected Go 1.26.11 container. This is an unmounted local component; no ARTEX request or tool reaches it, no service image exists, and broker crash recovery and cross-container socket behavior are unverified.
+
 ## Cross-cutting global asset deletion authorization
 
 Local remediation commit: `8634d12`.

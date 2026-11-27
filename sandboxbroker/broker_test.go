@@ -102,6 +102,25 @@ func TestBrokerLifecycle(t *testing.T) {
 	}
 }
 
+func TestBrokerShutdownRemovesOnlyOwnedSandboxes(t *testing.T) {
+	engine := &fakeEngine{}
+	broker, _ := New(engine, testImage)
+	for _, campaign := range []int64{1, 2} {
+		if _, err := broker.Create(context.Background(), campaign); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := broker.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if engine.removed != 2 || len(broker.byHandle) != 0 || len(broker.byCampaign) != 0 {
+		t.Fatalf("shutdown left owned sandboxes: engine=%+v", engine)
+	}
+	if err := broker.Shutdown(context.Background()); err != nil || engine.removed != 2 {
+		t.Fatalf("second shutdown removed anything else: %v %+v", err, engine)
+	}
+}
+
 func TestBrokerCleansFailedSandbox(t *testing.T) {
 	for _, failure := range []string{"start", "verify"} {
 		t.Run(failure, func(t *testing.T) {

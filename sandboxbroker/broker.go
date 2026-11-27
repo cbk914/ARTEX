@@ -131,6 +131,29 @@ func (b *Broker) Remove(ctx context.Context, handle string) error {
 	return nil
 }
 
+// Shutdown removes every sandbox still owned by this broker after its control
+// listener has stopped accepting requests. It never enumerates or removes
+// unrelated Docker containers. Abrupt process failure still needs recovery.
+func (b *Broker) Shutdown(ctx context.Context) error {
+	b.mu.Lock()
+	handles := make([]string, 0, len(b.byHandle))
+	for handle := range b.byHandle {
+		handles = append(handles, handle)
+	}
+	b.mu.Unlock()
+	var failures []error
+	for _, handle := range handles {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, err)
+			break
+		}
+		if err := b.Remove(ctx, handle); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
 func (b *Broker) lockSandbox(handle string) (*sandbox, error) {
 	b.mu.Lock()
 	s := b.byHandle[handle]
