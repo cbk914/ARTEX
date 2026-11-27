@@ -4,11 +4,11 @@ The initial baseline had no passing dynamic security regression. ARTEX-011 and A
 
 | ID | Priority | Status | Primary invariant | Required evidence |
 | --- | --- | --- | --- | --- |
-| ARTEX-001 | P0 | PENDING VALIDATION | Cross-campaign process and file isolation | Concurrent and sequential campaigns |
+| ARTEX-001 | P0 | CONFIRMED DESIGN LIMITATION; DYNAMIC VALIDATION PENDING | Cross-campaign process and file isolation | Source assigns one executor UID/GID to every run and spill tree. Concurrent and sequential synthetic campaign tests and broker implementation remain open; see ADR 0002. |
 | ARTEX-002 | P0 | CONFIRMED; PARTIAL MITIGATION | Privileged filesystem confinement | Deterministic parent swaps reached outside sentinels through read, write, mkdir, delete and upload before fixes. Descriptor-confined operations pass focused tests and race checks; explicit allowed roots and atomic replacement remain open. |
 | ARTEX-003 | P0 | CONFIRMED; PARTIAL MITIGATION | Atomic confined uploads | The duplicate-name pre-fix regression failed; focused post-fix concurrency, parent-link, cancellation, quota, malformed-name, 512 MiB boundary and race tests passed. Protected staging and immutable metadata remain open. |
 | ARTEX-004 | P0 | PENDING VALIDATION | Independent default-deny network authorization | Mock authorized, denied and infrastructure destinations through each executor |
-| ARTEX-005 | P0 | PENDING VALIDATION | Private HOME, cache, temp and browser state | Cross-campaign state and reuse tests |
+| ARTEX-005 | P0 | CONFIRMED DESIGN LIMITATION; DYNAMIC VALIDATION PENDING | Private HOME, cache, temp and browser state | `prepareExecHome` and `execHomeEnv` use one shared home and cache. Separate HOME/XDG/temp/browser state and cross-campaign tests remain open; see ADR 0002. |
 | ARTEX-006 | P1 | PENDING VALIDATION | Secure browser sessions | Login, logout, CSRF, stream reconnect, bearer compatibility |
 | ARTEX-007 | P1 | PENDING VALIDATION | Consistent, bounded archive and restore | Concurrent mutation, malformed archive, cancellation, rollback |
 | ARTEX-008 | P1 | PENDING VALIDATION | Immutable, attributed operator evidence | Stage, hash, concurrent modification, display |
