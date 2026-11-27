@@ -2,6 +2,7 @@ package server
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -605,6 +606,31 @@ func openArchiveSource(root *os.Root, name string, selected fs.FileInfo) (*os.Fi
 	return file, nil
 }
 
+// copyArchiveSource verifies that a staged file still has the bytes that were
+// written to the package. An executor may retain an open descriptor after the
+// task is stopped and rewrite a file while preserving its size and mtime.
+func copyArchiveSource(ctx context.Context, output io.Writer, input *os.File, selected fs.FileInfo, name string) error {
+	first := sha256.New()
+	if _, err := io.CopyN(output, archiveContextReader{ctx: ctx, r: io.TeeReader(input, first)}, selected.Size()); err != nil {
+		return err
+	}
+	if _, err := input.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	second := sha256.New()
+	if _, err := io.CopyN(second, archiveContextReader{ctx: ctx, r: input}, selected.Size()); err != nil {
+		return err
+	}
+	final, err := input.Stat()
+	if err != nil {
+		return err
+	}
+	if final.Size() != selected.Size() || !final.ModTime().Equal(selected.ModTime()) || !bytes.Equal(first.Sum(nil), second.Sum(nil)) {
+		return fmt.Errorf("archive source changed during read: %s", name)
+	}
+	return ctx.Err()
+}
+
 func (r archiveContextReader) Read(p []byte) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
@@ -727,13 +753,9 @@ func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string
 		if err != nil {
 			return err
 		}
-		_, copyErr := io.CopyN(tarWriter, archiveContextReader{ctx: ctx, r: input}, info.Size())
-		final, statErr := input.Stat()
+		copyErr := copyArchiveSource(ctx, tarWriter, input, info, relative)
 		closeErr := input.Close()
-		if statErr == nil && (final.Size() != info.Size() || !final.ModTime().Equal(info.ModTime())) {
-			statErr = fmt.Errorf("archive source changed during read: %s", relative)
-		}
-		return errors.Join(copyErr, statErr, closeErr, ctx.Err())
+		return errors.Join(copyErr, closeErr, ctx.Err())
 	})
 	if walkErr != nil {
 		_ = tarWriter.Close()
