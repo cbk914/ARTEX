@@ -74,6 +74,8 @@ The endpoint reports database reachability, not complete isolation or migration 
 
 ## ARTEX-004 staged CONNECT gateway
 
+Local prototype commit: `7f5e525`.
+
 `networkgateway.Gateway` fixes one campaign ID at construction and accepts only HTTP/1.1 CONNECT with an unambiguous authority. It asks `networkpolicy.Gate` to authorize the destination before opening a TCP tunnel and caps concurrent tunnels, duration and bytes per direction. Local loopback regressions verified an approved tunnel, direct-IP denial when only a hostname peer pin exists, denial on a new connection after revocation, unsupported-method and concurrency denial, byte-limit audit, ambiguous-authority rejection and fail-closed behavior when a peer cannot accept a deadline. `go test -race ./networkgateway ./networkpolicy -count=1` and `go vet ./networkgateway ./networkpolicy` passed in a network-disconnected disposable Go 1.26.11 container. No Docker-private listener, sandbox binding, production audit store or ARTEX executor uses this package. Plain HTTP, UDP, SOCKS, browser, MCP and raw-socket paths remain unprotected by it; ARTEX-004 remains open.
 
 ## ARTEX-009 partial authorization model

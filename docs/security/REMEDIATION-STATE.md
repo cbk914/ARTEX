@@ -62,6 +62,8 @@ Updated: 2026-11-27. Local branch: `codex/security-remediation`. Baseline: `3cb0
 
 ## Current state
 
+Latest ARTEX-004 gateway transport commit: `7f5e525`. It remains local, unintegrated and undeployed.
+
 ARTEX-004 gateway transport follow-up: a new `networkgateway` package binds TCP CONNECT requests to a fixed campaign ID and the staged policy evaluator, rejects other methods, bounds concurrency, duration and bytes, and refuses a tunnel whose connection cannot accept a deadline. Isolated loopback race tests exercise an allowed tunnel, direct-IP bypass denial, revocation on the next connection, limits and malformed authority; `go vet` passed for the gateway and evaluator. This is not wired into ARTEX or a Docker network, and does not intercept plain HTTP, UDP, SOCKS or raw sockets. The P0 finding remains open.
 
 Latest cross-cutting authorization commit: `8634d12` (agent global-deletion guard, operator API, regression and reusable full-suite launcher). The change is local and not deployed.
