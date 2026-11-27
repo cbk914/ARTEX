@@ -1,6 +1,6 @@
 # ADR 0003: Campaign network authorization boundary
 
-Status: proposed. No network enforcement change or deployment has occurred.
+Status: proposed, with a staged decision ledger. No network enforcement change or deployment has occurred.
 
 ## Evidence and constraint
 

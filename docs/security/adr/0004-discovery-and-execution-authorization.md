@@ -1,6 +1,6 @@
 # ADR 0004: Keep discovery separate from execution authorization
 
-Status: proposed; no execution authorization boundary is implemented by this ADR.
+Status: a separate decision ledger is staged locally; no execution authorization boundary or operator API is active.
 
 ## Observed behavior
 
@@ -24,6 +24,28 @@ coverage row, nor an inherited asset establishes operator permission to send
 traffic. Existing execution paths lack an independent default-deny campaign
 network boundary (ADR 0003). The current labels and gate behavior must not be
 represented as such a boundary.
+
+## Staged decision ledger
+
+Local commit `2a79fb7` adds migration `0016_campaign_network_rules.sql` with
+campaign network decisions and a separate revocation table. Application writes
+insert decisions and revocations as separate rows. No historical `task_scope`, asset,
+target pin or interception row is copied into it. `db.RecordCampaignNetworkRule`
+requires an existing live task, an actor, a reason, an allow or deny effect,
+an exact hostname, IP or CIDR target, TCP or UDP port bounds and an expiry.
+`db.ActiveCampaignNetworkRules` excludes expired and revoked rows and rows for
+deleted tasks; revocation is visible through a fresh database read while the
+original decision remains for audit. The tests check that agent coverage and
+source-task inheritance produce no decision, that a cross-task revocation is
+rejected, and that a version-15 database gains the table without altering its
+coverage row.
+
+These methods have no HTTP route, agent tool, broker adapter or gateway consumer.
+Their presence does not authorize or block a network connection in the current
+server. A future authenticated operator route must supply the actor and prove
+the task grant, and the broker must query current decisions on every new
+connection. A database read error, absent approval or missing gateway must
+remain a denial; no UI should describe these staged rows as effective scope.
 
 ## Required authorization model
 

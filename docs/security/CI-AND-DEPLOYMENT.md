@@ -34,6 +34,8 @@ Changing only the image back then failed closed: the previous binary rejected mi
 
 An operational change still requires verified backups of PostgreSQL and all four named volumes, exact image and Compose inputs, a data inventory, an operator-approved maintenance window, and a tested restore plan that preserves keys. A direct image-only rollback is incompatible once migration 15 has applied. No live container, credential or volume was changed in these tests.
 
+A later local migration 16 stages network decision records. Its version-15-to-16 and complete database package tests passed on disposable PostgreSQL, but the full runtime image and operational rollback rehearsal above predate that migration. Repeat those gates for any candidate deployment image.
+
 ## Baseline test limits
 
 The host Go 1.20.2 cannot parse the repository's Go 1.26.11 directive. The first disposable Go 1.26.11 container lacked PostgreSQL and had six root isolation test failures because the restricted UID could not execute Go's temporary test binary. A second disposable Go container and a PostgreSQL 16 container on an internal Docker network used a dedicated tmpfs database and a wrapper that made Go's temporary test binary traversable by that UID. `go test -exec /tmp/artex-test-exec.sh -p 1 ./...`, `go vet ./...`, and the CI-selected `go test -race` package list passed on the pre-ARTEX-011 code. Focused post-fix auth tests passed normally and under `-race`, and the full post-fix normal suite passed. The non-verbose runs did not enumerate test-level skips. Later frontend, Docker build, Compose and dependency checks are recorded in this file and the remediation state; their passing results do not establish browser acceptance or a safe operational deployment.
