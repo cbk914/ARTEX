@@ -78,7 +78,7 @@ func TestWorkspaceWriteParentSwapCannotEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustSymlink(t, outside, filepath.Join(root, "run"))
-	_ = writeWorkspaceResolved(cp, []byte("REPLACED"))
+	_ = writeWorkspaceResolved(context.Background(), cp, []byte("REPLACED"))
 	if body, err := os.ReadFile(sentinel); err != nil || string(body) != "KEEP" {
 		t.Fatalf("outside sentinel changed after parent swap: %q, %v", body, err)
 	}
@@ -88,6 +88,10 @@ func TestWorkspaceWritePreservesExistingModeAndCreatesParent(t *testing.T) {
 	root := t.TempDir()
 	existing := filepath.Join(root, "note.txt")
 	if err := os.WriteFile(existing, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := os.Stat(existing)
+	if err != nil {
 		t.Fatal(err)
 	}
 	s := newTestWorkspaceServer(root)
@@ -105,8 +109,69 @@ func TestWorkspaceWritePreservesExistingModeAndCreatesParent(t *testing.T) {
 		}
 	}
 	fi, err := os.Stat(existing)
-	if err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("existing mode changed: %v, %v", fi, err)
+	if err != nil || fi.Mode().Perm() != initial.Mode().Perm() {
+		t.Fatalf("existing mode changed from %v to %v: %v", initial.Mode().Perm(), fi, err)
+	}
+}
+
+func TestWorkspaceCancelledUploadPreservesExistingFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "note.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestWorkspaceServer(root)
+	cp, ok := s.wsResolveConfined("note.txt")
+	if !ok {
+		t.Fatal("fixture path was not accepted")
+	}
+	_, hdr := testChatFileHeader(t, "replacement")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := saveUpload(ctx, hdr, cp); err == nil {
+		t.Fatal("cancelled upload unexpectedly succeeded")
+	}
+	if body, err := os.ReadFile(path); err != nil || string(body) != "original" {
+		t.Fatalf("cancelled upload damaged existing file: %q, %v", body, err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "note.txt" {
+		t.Fatalf("cancelled upload left temporary entries: %v, %v", entries, err)
+	}
+	if err := saveUpload(context.Background(), hdr, cp); err != nil {
+		t.Fatalf("retry after cancellation failed: %v", err)
+	}
+	if body, err := os.ReadFile(path); err != nil || string(body) != "replacement" {
+		t.Fatalf("retry did not replace file: %q, %v", body, err)
+	}
+}
+
+func TestWorkspaceOverwriteDoesNotMutateOutsideHardlink(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, filepath.Join(root, "note.txt")); err != nil {
+		t.Skipf("hardlinks unavailable: %v", err)
+	}
+	s := newTestWorkspaceServer(root)
+	cp, ok := s.wsResolveConfined("note.txt")
+	if !ok {
+		t.Fatal("fixture path was not accepted")
+	}
+	if err := writeWorkspaceResolved(context.Background(), cp, []byte("inside")); err != nil {
+		t.Fatal(err)
+	}
+	if body, err := os.ReadFile(outside); err != nil || string(body) != "outside" {
+		t.Fatalf("outside hardlink target was mutated: %q, %v", body, err)
+	}
+	if body, err := os.ReadFile(filepath.Join(root, "note.txt")); err != nil || string(body) != "inside" {
+		t.Fatalf("workspace file not replaced: %q, %v", body, err)
 	}
 }
 

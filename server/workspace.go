@@ -224,51 +224,17 @@ func (s *Server) wsRead(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/workspace/write  {path, content} — create/overwrite a text file.
-func openWorkspaceWriteResolved(cp confinedPath) (*os.File, error) {
-	root, rel, err := openWorkspaceRoot(cp)
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-	if rel == "." {
-		return nil, errPathEscape
-	}
-	if err := root.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
-		return nil, err
-	}
-	f, err := openWorkspaceWriteCandidate(root, rel)
-	if err != nil {
-		return nil, err
-	}
-	fi, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		f.Close()
-		return nil, fmt.Errorf("target is not a regular file")
-	}
-	return f, nil
-}
-
-func writeWorkspaceResolved(cp confinedPath, content []byte) error {
-	f, err := openWorkspaceWriteResolved(cp)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := f.Truncate(0); err != nil {
-		return err
-	}
-	n, err := f.Write(content)
-	if err != nil {
-		return err
-	}
-	if n != len(content) {
-		return io.ErrShortWrite
-	}
-	return f.Close()
+func writeWorkspaceResolved(ctx context.Context, cp confinedPath, content []byte) error {
+	return replaceWorkspaceResolved(ctx, cp, func(out io.Writer) error {
+		n, err := out.Write(content)
+		if err != nil {
+			return err
+		}
+		if n != len(content) {
+			return io.ErrShortWrite
+		}
+		return nil
+	})
 }
 
 func (s *Server) wsWrite(w http.ResponseWriter, r *http.Request) {
@@ -290,7 +256,7 @@ func (s *Server) wsWrite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "target is a directory")
 		return
 	}
-	if err := writeWorkspaceResolved(cp, []byte(req.Content)); err != nil {
+	if err := writeWorkspaceResolved(r.Context(), cp, []byte(req.Content)); err != nil {
 		writeErr(w, 500, safeFSErr(err))
 		return
 	}
@@ -459,18 +425,9 @@ func saveUpload(ctx context.Context, hdr *multipart.FileHeader, dest confinedPat
 		return err
 	}
 	defer src.Close()
-	out, err := openWorkspaceWriteResolved(dest)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	if err := out.Truncate(0); err != nil {
-		return err
-	}
-	if err := copyUploadBounded(ctx, out, src, hdr.Size, maxWorkspaceUpload); err != nil {
-		return err
-	}
-	return out.Close()
+	return replaceWorkspaceResolved(ctx, dest, func(out io.Writer) error {
+		return copyUploadBounded(ctx, out, src, hdr.Size, maxWorkspaceUpload)
+	})
 }
 
 // refuseUploadSymlink rejects a destination that is already a symlink. os.Create
