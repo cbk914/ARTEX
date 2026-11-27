@@ -28,7 +28,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	broker, err := sandboxbroker.New(engine, image)
+	identity, err := sandboxbroker.OpenBrokerIdentity(socketPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer identity.Close()
+	if err := identity.PrepareSocket(socketPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	broker, err := sandboxbroker.NewWithOwner(engine, image, identity.Owner)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
