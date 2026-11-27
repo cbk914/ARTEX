@@ -65,13 +65,20 @@ func ServeUnix(ctx context.Context, socketPath string, broker *Broker) (retErr e
 }
 
 func validateBrokerSocketPath(path string) error {
-	if !filepath.IsAbs(path) || filepath.Base(path) != "broker.sock" {
-		return errors.New("broker socket requires an absolute broker.sock path")
+	if err := validateBrokerSocketDirectory(path); err != nil {
+		return err
 	}
 	if _, err := os.Lstat(path); err == nil {
 		return errors.New("broker socket path already exists")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	return nil
+}
+
+func validateBrokerSocketDirectory(path string) error {
+	if !filepath.IsAbs(path) || filepath.Base(path) != "broker.sock" {
+		return errors.New("broker socket requires an absolute broker.sock path")
 	}
 	dir := filepath.Dir(path)
 	for current := dir; ; current = filepath.Dir(current) {
@@ -89,6 +96,21 @@ func validateBrokerSocketPath(path string) error {
 		if current == filepath.Dir(current) {
 			break
 		}
+	}
+	return nil
+}
+
+func validateBrokerClientSocketPath(path string) error {
+	if err := validateBrokerSocketDirectory(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || info.Mode()&os.ModeSocket == 0 || stat.Uid != 0 || info.Mode().Perm() != 0o600 {
+		return errors.New("broker socket is not root-owned mode 0600")
 	}
 	return nil
 }

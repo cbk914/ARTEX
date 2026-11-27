@@ -11,7 +11,8 @@ import (
 	"time"
 )
 
-const maxBrokerRequestBytes = 128 << 10
+// A 64 KiB command can expand to six JSON bytes per control character.
+const maxBrokerRequestBytes = 512 << 10
 
 // newHTTPHandler exposes only the broker's opaque-handle lifecycle. It has no
 // HTTP authentication and must only be used by the root-only Unix listener.

@@ -93,3 +93,27 @@ func TestBrokerHTTPOmitsFailedCommandOutput(t *testing.T) {
 		t.Fatalf("failed command leaked output: %d %s", got.Code, got.Body.String())
 	}
 }
+
+func TestBrokerHTTPAcceptsEncodedMaximumCommand(t *testing.T) {
+	engine := &fakeEngine{}
+	broker, _ := New(engine, testImage)
+	handler, _ := newHTTPHandler(broker)
+	handle, err := broker.Create(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := strings.Repeat("\x01", 64<<10)
+	body, err := json.Marshal(struct {
+		Command string `json:"command"`
+	}{command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 128<<10 {
+		t.Fatal("fixture did not exercise JSON expansion")
+	}
+	got := brokerRequest(t, handler, http.MethodPost, "/v1/sandboxes/"+handle+"/run", string(body))
+	if got.Code != http.StatusOK || engine.executed != 1 {
+		t.Fatalf("valid maximum command rejected: HTTP %d", got.Code)
+	}
+}
