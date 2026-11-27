@@ -98,6 +98,7 @@ type Worker struct {
 	// maxTokensFn resolves the per-reply output cap in tokens, on the same
 	// per-run basis. nil or 0 = send no cap and let the endpoint decide.
 	maxTokensFn func() int
+	taskShell   TaskShellRunner
 	// lessonsBlock is the raw RSI evidence block. Empty = off. Execute() frames
 	// it with a per-run data envelope (field=lessons) and appends it after the
 	// rendered system prompt. The server renders the text from outcome records.
@@ -179,14 +180,20 @@ func NewWorker(prov llm.Provider, model, workDir string, tx *transcript.Store, w
 	return &Worker{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, extraTools: extra}
 }
 
+func (w *Worker) SetTaskShellRunner(runner TaskShellRunner) { w.taskShell = runner }
+
 // defaultToolsExcept returns defaultTools(base) minus the named tools (by
 // CoreTool.Name()). Used to trim SDK default tools an agent shouldn't have.
 func defaultToolsExcept(base string, exclude ...string) []actool.CoreTool {
+	return defaultToolsExceptWithTaskShell(base, nil, exclude...)
+}
+
+func defaultToolsExceptWithTaskShell(base string, runner TaskShellRunner, exclude ...string) []actool.CoreTool {
 	drop := make(map[string]bool, len(exclude))
 	for _, n := range exclude {
 		drop[n] = true
 	}
-	all := defaultTools(base)
+	all := defaultToolsWithTaskShell(base, runner)
 	out := make([]actool.CoreTool, 0, len(all))
 	for _, t := range all {
 		if !drop[t.Name()] {
@@ -555,7 +562,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// searching goes through Bash(grep/find) — narrowing the tool surface and reducing
 	// low-value calls. The rest of the SDK default tools (Read/Write/Edit/LS/Bash/Sleep)
 	// are kept as usual.
-	base = append(base, defaultToolsExcept(w.workDir, "MultiEdit", "Glob", "Grep")...)
+	base = append(base, defaultToolsExceptWithTaskShell(w.workDir, w.taskShell, "MultiEdit", "Glob", "Grep")...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID})
 	tools, def, cleanup := AugmentTools(WithToolQuery(ctx, nodeSummary(intent)), "worker", base)
 	defer cleanup()

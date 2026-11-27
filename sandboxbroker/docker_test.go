@@ -110,7 +110,7 @@ func TestDockerExecInputUsesSandboxUserAndBoundedStdin(t *testing.T) {
 	if err != nil || output != "stdin" || !reflect.DeepEqual(r.input, input) {
 		t.Fatalf("exec stdin: %q %v input=%v", output, err, r.input)
 	}
-	if len(r.calls) != 1 || !reflect.DeepEqual(r.calls[0], []string{"exec", "-i", id, "/bin/sh", "-c", "cat"}) {
+	if len(r.calls) != 1 || !reflect.DeepEqual(r.calls[0], []string{"exec", "-i", "--workdir=/campaign", id, "/bin/sh", "-c", "cat"}) {
 		t.Fatalf("unexpected Docker command: %v", r.calls)
 	}
 	if _, err := d.ExecInput(context.Background(), id, "cat", make([]byte, maxBrokerStdinBytes+1)); err == nil || len(r.calls) != 1 {
@@ -256,7 +256,7 @@ func TestDockerExecKeepsCommandAfterContainerID(t *testing.T) {
 	if err != nil || out != "ok" {
 		t.Fatalf("exec=%q %v", out, err)
 	}
-	if !reflect.DeepEqual(r.calls[0], []string{"exec", id, "/bin/sh", "-c", command}) {
+	if !reflect.DeepEqual(r.calls[0], []string{"exec", "--workdir=/campaign", id, "/bin/sh", "-c", command}) {
 		t.Fatalf("unexpected Docker arguments: %v", r.calls[0])
 	}
 }

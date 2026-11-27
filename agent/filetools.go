@@ -45,11 +45,17 @@ var confinedFileToolNames = map[string]func(*workRoot, json.RawMessage, *actool.
 // working directory under base (the data directory the agent's run directories
 // live in). Every agent kind builds its tool set from it.
 func defaultTools(base string) []actool.CoreTool {
+	return defaultToolsWithTaskShell(base, nil)
+}
+
+func defaultToolsWithTaskShell(base string, runner TaskShellRunner) []actool.CoreTool {
 	all := actool.DefaultTools()
 	out := make([]actool.CoreTool, 0, len(all))
 	for _, t := range all {
 		if run, ok := confinedFileToolNames[t.Name()]; ok {
 			t = &confinedFileTool{CoreTool: t, base: base, run: run}
+		} else if t.Name() == "Bash" && runner != nil {
+			t = &sandboxBashTool{CoreTool: t, runner: runner}
 		}
 		out = append(out, t)
 	}

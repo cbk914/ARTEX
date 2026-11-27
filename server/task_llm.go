@@ -800,6 +800,9 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	window := workerRuntime.CompactionWindow()
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
+	if s.taskSandboxes != nil {
+		wk.SetTaskShellRunner(s.taskSandboxes)
+	}
 	wk.SetFindingRecorder(s.evidenceStore())
 	wk.SetTriageClient(s.triageClient()) // advisory dedup on report_finding (nil = off)
 	s.applyTriageThreshold()             // stored suppression threshold (cheap, idempotent)
@@ -813,6 +816,9 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetWebSearch(s.webSearchFor("worker"))
 	wk.SetConstraintInject(s.constraintInjectWorker) // operation-constraint injection into the worker (configurable, on by default)
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
+	if s.taskSandboxes != nil {
+		pl.SetTaskShellRunner(s.taskSandboxes)
+	}
 	pl.SetFindingRecorder(s.evidenceStore())
 	pl.SetTriageClient(s.triageClient()) // the planner registers findings too (wrap-up paths)
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
@@ -833,6 +839,9 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	// default; shadow logs what would be shown, inject appends the block.
 	s.wireTaskLessons(t, wk, pl)
 	main := agent.NewMainAgent(mainRuntime, "task-router", s.m.dir, tx, mainRuntime.CompactionWindow(), s.agentMaxTurns("mainagent"))
+	if s.taskSandboxes != nil {
+		main.SetTaskShellRunner(s.taskSandboxes)
+	}
 	main.SetFindingRecorder(s.evidenceStore())
 	main.SetCompactionWindowResolver(mainRuntime.CompactionWindow)
 	main.SetNonStreaming(mainRuntime.nonStreaming)

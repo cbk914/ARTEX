@@ -247,7 +247,7 @@ func (d *DockerEngine) Exec(ctx context.Context, id, command string) (string, er
 	if !containerID.MatchString(id) || command == "" || len(command) > 64<<10 || strings.IndexByte(command, 0) >= 0 {
 		return "", errors.New("invalid sandbox execution request")
 	}
-	output, err := d.runner.Run(ctx, "exec", id, "/bin/sh", "-c", command)
+	output, err := d.runner.Run(ctx, "exec", "--workdir=/campaign", id, "/bin/sh", "-c", command)
 	return string(output), err
 }
 
@@ -255,7 +255,7 @@ func (d *DockerEngine) ExecInput(ctx context.Context, id, command string, input 
 	if !containerID.MatchString(id) || command == "" || len(command) > 64<<10 || strings.IndexByte(command, 0) >= 0 || len(input) == 0 || len(input) > maxBrokerStdinBytes {
 		return "", errors.New("invalid sandbox stdin execution request")
 	}
-	output, err := d.runner.RunInput(ctx, bytes.NewReader(input), "exec", "-i", id, "/bin/sh", "-c", command)
+	output, err := d.runner.RunInput(ctx, bytes.NewReader(input), "exec", "-i", "--workdir=/campaign", id, "/bin/sh", "-c", command)
 	return string(output), err
 }
 
