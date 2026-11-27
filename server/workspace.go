@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -441,18 +442,34 @@ func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dirRel := s.wsRel(dir.realPath)
-	saved := 0
-	for _, hdr := range files {
-		name := filepath.Base(hdr.Filename) // strip any path component
-		if name == "" || name == "." || name == ".." {
-			continue
-		}
+	resolveDestination := func(name string) (confinedPath, bool) {
 		destRel := name
 		if dirRel != "" {
 			destRel = dirRel + "/" + name
 		}
-		dest, okd := s.wsResolveConfined(destRel)
-		if !okd || dest.realPath == dest.realRoot {
+		dest, ok := s.wsResolveConfined(destRel)
+		return dest, ok && dest.realPath != dest.realRoot
+	}
+	// Reject the complete batch before replacing any existing file. Resolve
+	// again during publication because an untrusted directory can change while
+	// the request is being processed.
+	names := make([]string, len(files))
+	for i, hdr := range files {
+		name := path.Base(strings.ReplaceAll(hdr.Filename, "\\", "/"))
+		if name == "" || name == "." || name == ".." {
+			writeErr(w, 400, "invalid upload filename")
+			return
+		}
+		if _, ok := resolveDestination(name); !ok {
+			writeErr(w, 400, "invalid path")
+			return
+		}
+		names[i] = name
+	}
+	saved := 0
+	for i, hdr := range files {
+		dest, ok := resolveDestination(names[i])
+		if !ok {
 			writeErr(w, 400, "invalid path")
 			return
 		}
