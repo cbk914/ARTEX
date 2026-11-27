@@ -4427,6 +4427,21 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	var attachmentBaseDir string
+	if len(req.Attachments) > 0 {
+		taskID, err := strconv.ParseInt(t.ID, 10, 64)
+		if err != nil {
+			writeErr(w, 400, "invalid task ID")
+			return
+		}
+		attachmentBaseDir = agent.EnsureRunDir(s.m.dir, taskID, 0)
+		canonical, err := validateChatAttachments(r.Context(), attachmentBaseDir, req.Attachments)
+		if err != nil {
+			writeErr(w, 400, "invalid or changed attachment")
+			return
+		}
+		req.Attachments = canonical
+	}
 	agentMessage, ok := s.prepareChatMentionMessage(w, req.Message)
 	if !ok {
 		return
@@ -4496,7 +4511,10 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			resume := func() { s.reviveTask(t) } // set_goals added a goal → pulls the task back to running
 			// Splice the list of [absolute paths] of uploaded attachments into the message sent to the agent; it uses them to open files via Read/Bash.
 			// mainDir = the main agent's run directory (its CWD, tasks/<id>/main), the same call as chatUpload's target dir and the agent itself.
-			mainDir := agent.EnsureRunDir(s.m.dir, maTaskID, 0)
+			mainDir := attachmentBaseDir
+			if mainDir == "" {
+				mainDir = agent.EnsureRunDir(s.m.dir, maTaskID, 0)
+			}
 			agentMsg := composeAgentMessage(agentMessage, req.Attachments, mainDir)
 			// Tag the turn for the target gate: the task, the "mainagent" lane and the approval scope.
 			gctx := intercept.WithTaskContext(ctx, t.ID, "mainagent", func(a db.Activity) {

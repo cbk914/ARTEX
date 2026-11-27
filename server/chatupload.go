@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -188,12 +191,16 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 			continue
 		}
-		savedName, err := saveChatUpload(uploadDir, hdr, name, r.Context())
+		savedName, digest, err := saveChatUploadWithDigest(uploadDir, hdr, name, r.Context())
 		if err != nil {
 			writeErr(w, 500, "Save failed: "+err.Error())
 			return
 		}
-		out = append(out, chatAttachment{Name: savedName, Path: "uploads/" + savedName, Size: hdr.Size, Abs: filepath.Join(dir, savedName)})
+		att := chatAttachment{Name: savedName, Path: "uploads/" + savedName, Size: hdr.Size, SHA256: digest}
+		if sub == "drafts" {
+			att.Abs = filepath.Join(dir, savedName)
+		}
+		out = append(out, att)
 	}
 	writeJSON(w, 200, map[string]any{"attachments": out})
 }
@@ -229,17 +236,22 @@ func createUniqueChatFile(dir *os.Root, name string) (*os.File, string, error) {
 // through the same directory descriptor. Header Size comes from multipart
 // parsing, and the request body and aggregate sizes are bounded above.
 func saveChatUpload(dir *os.Root, hdr *multipart.FileHeader, name string, ctx context.Context) (string, error) {
+	savedName, _, err := saveChatUploadWithDigest(dir, hdr, name, ctx)
+	return savedName, err
+}
+
+func saveChatUploadWithDigest(dir *os.Root, hdr *multipart.FileHeader, name string, ctx context.Context) (string, string, error) {
 	if hdr.Size < 0 || hdr.Size > maxChatUpload {
-		return "", fmt.Errorf("upload exceeds size limit")
+		return "", "", fmt.Errorf("upload exceeds size limit")
 	}
 	src, err := hdr.Open()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer src.Close()
 	out, savedName, err := createUniqueChatFile(dir, name)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	complete := false
 	defer func() {
@@ -248,14 +260,15 @@ func saveChatUpload(dir *os.Root, hdr *multipart.FileHeader, name string, ctx co
 			_ = dir.Remove(savedName)
 		}
 	}()
-	if err := copyUploadBounded(ctx, out, src, hdr.Size, maxChatUpload); err != nil {
-		return "", err
+	hasher := sha256.New()
+	if err := copyUploadBounded(ctx, io.MultiWriter(out, hasher), src, hdr.Size, maxChatUpload); err != nil {
+		return "", "", err
 	}
 	if err := out.Close(); err != nil {
-		return "", err
+		return "", "", err
 	}
 	complete = true
-	return savedName, nil
+	return savedName, hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // composeAgentMessage appends an attachment manifest to the user's message so the agent

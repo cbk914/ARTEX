@@ -444,6 +444,15 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	}
 
 	busyKey := s.convBusyKey(c.ID)
+	if len(req.Attachments) > 0 {
+		baseDir := agent.EnsureSessionDir(s.m.dir, busyKey)
+		canonical, err := validateChatAttachments(r.Context(), baseDir, req.Attachments)
+		if err != nil {
+			writeErr(w, 400, "invalid or changed attachment")
+			return
+		}
+		req.Attachments = canonical
+	}
 	s.chatMu.Lock()
 	if s.chatBusy[busyKey] {
 		s.chatMu.Unlock()

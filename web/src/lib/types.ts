@@ -655,6 +655,7 @@ export interface ChatAttachment {
   name: string;
   path: string;
   size: number;
+  sha256?: string;
   abs?: string; // absolute path (returned for scope=staging uploads; write it into the description before creating the task)
 }
 
