@@ -1,0 +1,13 @@
+# ARTEX-Galactus host-side sandbox broker. This image is not part of the
+# application Compose deployment until the campaign isolation gates pass.
+FROM golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY sandboxbroker/ ./sandboxbroker/
+COPY cmd/artex-sandbox-broker/ ./cmd/artex-sandbox-broker/
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags='-s -w' -o /out/artex-sandbox-broker ./cmd/artex-sandbox-broker
+
+FROM scratch
+COPY --from=docker:cli@sha256:4e60c31615e83523afbb59773b25d055c0da9edcd5f80a4c6a6eebad49de1a25 /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=build /out/artex-sandbox-broker /usr/local/bin/artex-sandbox-broker
+ENTRYPOINT ["/usr/local/bin/artex-sandbox-broker"]
