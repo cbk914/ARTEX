@@ -443,6 +443,7 @@
   "Cancel": "取消",
   "Cancel edit": "取消编辑",
   "Cancel locate": "取消定位",
+  "Campaign isolation is not enforced: agent processes share an identity, HOME and writable task storage across campaigns.": "Campaign isolation is not enforced: agent processes share an identity, HOME and writable task storage across campaigns.",
   "Cannot confirm initialization state": "无法确认初始化状态",
   "Cannot connect or no 200 yet: network-layer errors such as connection reset / read-write timeout / DNS failure, plus HTTP 408, 429, 500, 502, 503, 504.": "连不上或还没拿到 200：连接重置 / 读写超时 / DNS 失败等网络层错误，以及 HTTP 408、429、500、502、503、504。",
   "Cannot delete the active profile": "无法删除当前激活的配置",

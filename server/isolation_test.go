@@ -45,7 +45,7 @@ func TestEnforceIsolation(t *testing.T) {
 
 	// Linux, root, with the development escape: degraded, banner names the flag.
 	out = captureLog(t, func() { st, err = EnforceIsolation("linux", root, cause, true) })
-	if err != nil || st.Mode != IsolationDegraded || st.Reason != cause.Error() {
+	if err != nil || st.Mode != IsolationDegraded || st.CampaignBoundary != CampaignBoundaryShared || st.Reason != cause.Error() {
 		t.Fatalf("linux root with the escape: status %+v err %v, want degraded", st, err)
 	}
 	for _, want := range []string{banner, "-" + DevNoIsolationFlag, "DEVELOPMENT ONLY", cause.Error(), "keys", "database"} {
@@ -61,7 +61,7 @@ func TestEnforceIsolation(t *testing.T) {
 		p    ExecPrivilege
 	}{{"linux", off}, {"windows", off}, {"darwin", off}, {"darwin", root}} {
 		out = captureLog(t, func() { st, err = EnforceIsolation(c.goos, c.p, cause, false) })
-		if err != nil || st.Mode != IsolationDegraded || st.Reason != cause.Error() {
+		if err != nil || st.Mode != IsolationDegraded || st.CampaignBoundary != CampaignBoundaryShared || st.Reason != cause.Error() {
 			t.Fatalf("%s drop=%v: status %+v err %v, want a degraded start", c.goos, c.p.Enabled, st, err)
 		}
 		for _, want := range []string{banner, "cannot isolate agents", cause.Error(), "keys", "database"} {
@@ -77,7 +77,7 @@ func TestEnforceIsolation(t *testing.T) {
 	// A passing self-test starts isolated, escape or not, without a banner.
 	for _, escape := range []bool{false, true} {
 		out = captureLog(t, func() { st, err = EnforceIsolation("linux", root, nil, escape) })
-		if err != nil || st.Mode != IsolationIsolated || !strings.Contains(out, "self-test passed") || strings.Contains(out, banner) {
+		if err != nil || st.Mode != IsolationIsolated || st.CampaignBoundary != CampaignBoundaryShared || !strings.Contains(out, "self-test passed") || strings.Contains(out, banner) {
 			t.Fatalf("passing self-test (escape %v): status %+v err=%v\n%s", escape, st, err, out)
 		}
 	}
@@ -88,7 +88,7 @@ func TestEnforceIsolation(t *testing.T) {
 func TestHealthReportsIsolation(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	s := &Server{jwtKey: key}
-	WithIsolationStatus(IsolationStatus{Mode: IsolationDegraded, Reason: "the server is not root"})(s)
+	WithIsolationStatus(IsolationStatus{Mode: IsolationDegraded, CampaignBoundary: CampaignBoundaryShared, Reason: "the server is not root"})(s)
 
 	w := httptest.NewRecorder()
 	s.health(w, httptest.NewRequest("GET", "/api/health", nil))
@@ -108,7 +108,7 @@ func TestHealthReportsIsolation(t *testing.T) {
 		Isolation *IsolationStatus `json:"isolation"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body.Isolation == nil ||
-		body.Isolation.Mode != IsolationDegraded || body.Isolation.Reason != "the server is not root" {
+		body.Isolation.Mode != IsolationDegraded || body.Isolation.CampaignBoundary != CampaignBoundaryShared || body.Isolation.Reason != "the server is not root" {
 		t.Fatalf("signed in: %s, want the degraded status", w.Body.String())
 	}
 }

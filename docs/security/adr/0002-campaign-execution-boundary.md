@@ -10,6 +10,14 @@ The custom-tool launcher formerly used `SysProcAttr.Credential` without setting 
 
 The supported-platform check now rejects the privilege drop on non-Linux Unix hosts before setup; those hosts cannot provide the Linux `no_new_privs` guarantee. A macOS server test binary cross-compiled after this change. No macOS runtime acceptance is claimed.
 
+## Docker Desktop feasibility probe
+
+On 2026-11-27, a disposable `artex:local` container with no network or operational mounts could not create user, PID, network or mount namespaces with `unshare`; each attempt returned `Operation not permitted`. This is a runtime constraint of the tested Docker configuration, not a universal Linux result. An in-process broker that requires these namespace operations cannot be enabled in the current container.
+
+Two separate disposable sibling containers were then started with `--network none`, a read-only image, private tmpfs at `/campaign`, no capabilities, `no-new-privileges`, and CPU, memory and PID limits. Their PID, mount and network namespace identifiers differed. A marker written in A's private tmpfs was absent in B; B could neither see nor signal A's host PID. The probe used synthetic data and did not mount any operational ARTEX volume. The existing `artex:local` image declares `/app/data` and `/app/keys` volumes, so Docker created distinct empty anonymous volumes for these probes; they were inspected and removed with the probe containers. A production execution image must avoid or explicitly override those image-declared volumes.
+
+This proves only that Docker Desktop can supply separate local container boundaries under the tested options. It does not prove ARTEX routes any executor through them, that approved network traffic works, that a compromised process cannot exploit a kernel flaw, or that lifecycle and artifact exchange are correct. The implementation path is a dedicated trusted broker outside the ARTEX server and agent containers. It must own container creation and lifecycle, accept only opaque campaign handles and fixed reviewed image/policy choices, and expose no Docker daemon socket to the server or agents. Engine access in a broker is host-powerful and requires a separate credential and API review before deployment.
+
 ## Proposed boundary
 
 Introduce a trusted campaign execution broker that owns a `SandboxHandle` for each campaign. The handle carries an opaque ID, the authorized campaign and operator scope, private filesystem and process namespace references, network policy reference, resource limits and lifecycle state. The server must use that handle for every Bash, interactive shell, background task, Python, custom-tool and stdio MCP launch, and for file-tool operations. No tool receives a raw identity, host path or namespace selector from an LLM or imported document.

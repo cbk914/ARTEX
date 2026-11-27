@@ -269,7 +269,7 @@ export const api = {
       service: string;
       version: string;
       latest_version?: string;
-      isolation?: { mode: "isolated" | "degraded"; reason?: string };
+      isolation?: { mode: "isolated" | "degraded"; campaign_boundary?: "shared" | "enforced"; reason?: string };
     }>("/health"),
 
   // ---- auth ----

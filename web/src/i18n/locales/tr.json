@@ -443,6 +443,7 @@
   "Cancel": "İptal",
   "Cancel edit": "Düzenlemeyi iptal et",
   "Cancel locate": "Konum bulmayı iptal et",
+  "Campaign isolation is not enforced: agent processes share an identity, HOME and writable task storage across campaigns.": "Campaign isolation is not enforced: agent processes share an identity, HOME and writable task storage across campaigns.",
   "Cannot confirm initialization state": "Kurulum durumu doğrulanamıyor",
   "Cannot connect or no 200 yet: network-layer errors such as connection reset / read-write timeout / DNS failure, plus HTTP 408, 429, 500, 502, 503, 504.": "Bağlanılamıyor veya henüz 200 gelmedi: bağlantı sıfırlama / okuma-yazma zaman aşımı / DNS hatası gibi ağ katmanı hataları ile HTTP 408, 429, 500, 502, 503, 504.",
   "Cannot delete the active profile": "Etkin profil silinemez",

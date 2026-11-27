@@ -14,7 +14,9 @@ import (
 // open a database session without the server's password; it also checks that the
 // file tools cannot read the secrets. EnforceIsolation then decides the start:
 //
-//   - The self-test passes: the server starts isolated.
+//   - The self-test passes: the server starts with its control-plane secrets
+//     separated from the shared executor identity. Campaigns are not isolated
+//     from one another by this check.
 //   - Linux with the privilege drop on (the server is root, as in the Docker image):
 //     isolation is expected there and the self-test shows it is broken, so the start
 //     stops. The development escape -dev-insecure-no-isolation, off by default, lets
@@ -32,13 +34,16 @@ const DevNoIsolationFlag = "dev-insecure-no-isolation"
 
 // The isolation modes the server reports.
 const (
-	IsolationIsolated = "isolated"
-	IsolationDegraded = "degraded"
+	IsolationIsolated      = "isolated"
+	IsolationDegraded      = "degraded"
+	CampaignBoundaryShared = "shared"
 )
 
-// IsolationStatus is the agent isolation the server runs with.
+// IsolationStatus reports the control-plane privilege drop and the independent
+// campaign boundary separately. Mode is retained for existing API clients.
 type IsolationStatus struct {
-	Mode string `json:"mode"`
+	Mode             string `json:"mode"`
+	CampaignBoundary string `json:"campaign_boundary"`
 	// Reason is the self-test failure of a degraded start.
 	Reason string `json:"reason,omitempty"`
 }
@@ -65,17 +70,17 @@ type IsolationTargets struct {
 // or an error when the start must stop.
 func EnforceIsolation(goos string, p ExecPrivilege, selfTest error, devEscape bool) (IsolationStatus, error) {
 	if selfTest == nil {
-		log.Printf("[isolation] self-test passed: agent processes and file tools run as the executor and cannot reach the server's secrets")
+		log.Printf("[isolation] self-test passed: agent processes and file tools run as the executor and cannot reach the server's secrets; campaigns still share the executor identity and HOME")
 		if devEscape {
 			log.Printf("[isolation] -%s is set and not needed: the self-test passed", DevNoIsolationFlag)
 		}
-		return IsolationStatus{Mode: IsolationIsolated}, nil
+		return IsolationStatus{Mode: IsolationIsolated, CampaignBoundary: CampaignBoundaryShared}, nil
 	}
 	if isolationRequired(goos, p) && !devEscape {
 		return IsolationStatus{}, fmt.Errorf("agent isolation self-test failed: %v. A Linux server running as root with the privilege drop does not start without agent isolation: fix the cause above, or pass -%s for development only", selfTest, DevNoIsolationFlag)
 	}
 	logDegradedBanner(selfTest, isolationRequired(goos, p))
-	return IsolationStatus{Mode: IsolationDegraded, Reason: selfTest.Error()}, nil
+	return IsolationStatus{Mode: IsolationDegraded, CampaignBoundary: CampaignBoundaryShared, Reason: selfTest.Error()}, nil
 }
 
 // isolationRequired reports whether the host can isolate agents, so that a failed

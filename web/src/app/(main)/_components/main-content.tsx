@@ -45,6 +45,7 @@ export function MainContent({ children }: { children: ReactNode }) {
   const [latest, setLatest] = useState("");
   // Set when the server started with agent isolation degraded (server/isolation.go): the self-test failure.
   const [degraded, setDegraded] = useState<string | null>(null);
+  const [campaignBoundaryShared, setCampaignBoundaryShared] = useState(false);
 
   useEffect(() => {
     api
@@ -54,6 +55,7 @@ export function MainContent({ children }: { children: ReactNode }) {
         const l = h.latest_version ?? "";
         setLatest(l && getLocalStorageValue(UPDATE_DISMISSED_KEY) !== l ? l : "");
         setDegraded(h.isolation?.mode === "degraded" ? (h.isolation.reason ?? "") : null);
+        setCampaignBoundaryShared(h.isolation?.campaign_boundary === "shared");
       })
       .catch(() => setVersion(""));
   }, []);
@@ -71,6 +73,15 @@ export function MainContent({ children }: { children: ReactNode }) {
         )}
       </div>
     ) : null;
+
+  const campaignBoundaryBanner = campaignBoundaryShared ? (
+    <div
+      role="alert"
+      className="flex shrink-0 items-center justify-center border-destructive/40 border-b bg-destructive/10 px-4 py-1 text-destructive text-xs"
+    >
+      {t("Campaign isolation is not enforced: agent processes share an identity, HOME and writable task storage across campaigns.")}
+    </div>
+  ) : null;
 
   const updateBanner = latest ? (
     <div className="flex shrink-0 items-center justify-center gap-2 border-b bg-muted/50 px-4 py-1 text-xs">
@@ -95,6 +106,7 @@ export function MainContent({ children }: { children: ReactNode }) {
     return (
       <>
         {isolationBanner}
+        {campaignBoundaryBanner}
         {updateBanner}
         {children}
       </>
@@ -104,6 +116,7 @@ export function MainContent({ children }: { children: ReactNode }) {
   return (
     <>
       {isolationBanner}
+      {campaignBoundaryBanner}
       {updateBanner}
       <header
         className={cn(

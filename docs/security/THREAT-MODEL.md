@@ -1,6 +1,6 @@
 # ARTEX-Galactus threat model
 
-Version: 2026-11-26 baseline. Assets: signing and encryption keys, operator sessions, PostgreSQL records, campaign files and evidence, tool credentials, archives and authorized target scope. Principals: operator, privileged server, planner, worker, agent-launched processes, MCP services, LLM providers and external targets. Target content, scanner output, MCP responses and imported files are untrusted.
+Version: 2026-11-27. Assets: signing and encryption keys, operator sessions, PostgreSQL records, campaign files and evidence, tool credentials, archives and authorized target scope. Principals: operator, privileged server, future sandbox broker, Docker Engine, planner, worker, agent-launched processes, MCP services, LLM providers and external targets. Target content, scanner output, MCP responses and imported files are untrusted. A future broker and its Engine access would be a separate high-trust boundary; neither is implemented in the running ARTEX service.
 
 ## Abuse paths
 
