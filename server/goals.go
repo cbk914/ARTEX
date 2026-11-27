@@ -141,6 +141,14 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	wasPaused := lifecycle.Paused || s.engine.IsPaused(t.ID)
 	wasQueued := lifecycle.Queued
 	engineWasPaused := s.engine.IsPaused(t.ID)
+	// A terminal run may be revived before another task triggers capacity
+	// cleanup. Retire its old sandbox before the status can become runnable;
+	// otherwise the new run would inherit the old private HOME and files.
+	if wasTerminal {
+		if err := s.removeTaskSandbox(t.ID); err != nil {
+			return false, fmt.Errorf("retire previous task sandbox before revival: %w", err)
+		}
+	}
 	enabled, limit := s.m.ConcurrencyLimit()
 	ready := s.engine.ReadyFor(t)
 

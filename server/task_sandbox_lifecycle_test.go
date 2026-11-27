@@ -70,3 +70,57 @@ func TestTaskDeleteRemovesBoundSandboxAfterCommit(t *testing.T) {
 		})
 	}
 }
+
+func TestTerminalTaskRevivalRetiresPreviousSandbox(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		db.SkipPGUnavailable(t, err)
+	}
+	defer m.Close()
+	defer restoreConcurrencySetting(t, m)()
+	if err := m.SetConcurrency(false, defaultConcurrencyLimit); err != nil {
+		t.Fatal(err)
+	}
+	task, err := m.CreateTask("sandbox revival fixture", "fresh private state", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) }()
+	s := newAdmissionTestServer(m, nil)
+	backend := &sandboxBackendRecorder{created: make(map[int64]int)}
+	controller, err := s.newTaskSandboxController(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.taskSandboxes = controller
+	info := agent.RunInfo{TaskID: mustTaskID(t, task.ID), ExplorationID: task.ExpID}
+	if _, err := controller.Run(context.Background(), info, "first run"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetTaskStatus(task.ID, "done"); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	backend.removeFail = true
+	backend.mu.Unlock()
+	if _, err := s.admitTask(task, "resume"); err == nil {
+		t.Fatal("revived a terminal task whose previous sandbox could not be removed")
+	}
+	if state := task.lifecycleSnapshot(); state.Status != "done" {
+		t.Fatalf("failed cleanup changed task status: %+v", state)
+	}
+	backend.mu.Lock()
+	backend.removeFail = false
+	backend.mu.Unlock()
+	if _, err := s.admitTask(task, "resume"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Run(context.Background(), info, "second run"); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.created[info.TaskID] != 2 || len(backend.removed) != 1 {
+		t.Fatalf("revival reused old sandbox: created=%v removed=%v", backend.created, backend.removed)
+	}
+}
