@@ -100,6 +100,23 @@ func (c *taskSandboxController) operate(ctx context.Context, info agent.RunInfo,
 	if _, err := c.authorizedTask(info); err != nil {
 		return "", err
 	}
+	// Finished tasks must release broker capacity before a new task creates a
+	// sandbox. Do this before locking the current entry so concurrent new tasks
+	// cannot wait on one another's entry locks.
+	c.mu.Lock()
+	current := c.entries[info.TaskID]
+	c.mu.Unlock()
+	needsCapacity := current == nil
+	if current != nil {
+		current.mu.Lock()
+		needsCapacity = current.handle == ""
+		current.mu.Unlock()
+	}
+	if needsCapacity {
+		if err := c.retireTerminal(ctx, info.TaskID); err != nil {
+			return "", err
+		}
+	}
 	c.mu.Lock()
 	entry := c.entries[info.TaskID]
 	if entry == nil {
@@ -154,6 +171,48 @@ func (c *taskSandboxController) operate(ctx context.Context, info agent.RunInfo,
 		return "", err
 	}
 	return fn(entry.handle)
+}
+
+// retireTerminal frees capacity held by settled tasks while preserving active
+// and paused sandboxes. A failed lookup or removal leaves the handle tracked
+// and prevents a new creation with uncertain ownership.
+func (c *taskSandboxController) retireTerminal(ctx context.Context, except int64) error {
+	c.mu.Lock()
+	entries := make(map[int64]*taskSandboxEntry, len(c.entries))
+	for id, entry := range c.entries {
+		if id != except {
+			entries[id] = entry
+		}
+	}
+	c.mu.Unlock()
+	for id, entry := range entries {
+		entry.mu.Lock()
+		if entry.closed || entry.handle == "" {
+			entry.mu.Unlock()
+			continue
+		}
+		row, err := c.store.GetTask(id)
+		if err != nil {
+			entry.mu.Unlock()
+			return fmt.Errorf("check task sandbox retirement: %w", err)
+		}
+		if row != nil && row.ExplorationID == entry.expID && !db.IsTerminal(row.Status) {
+			entry.mu.Unlock()
+			continue
+		}
+		if err := c.broker.Remove(ctx, entry.handle); err != nil {
+			entry.mu.Unlock()
+			return fmt.Errorf("retire terminal task sandbox: %w", err)
+		}
+		entry.closed = true
+		c.mu.Lock()
+		if c.entries[id] == entry {
+			delete(c.entries, id)
+		}
+		c.mu.Unlock()
+		entry.mu.Unlock()
+	}
+	return nil
 }
 
 // retireCreated removes a sandbox that was created but never admitted to run.

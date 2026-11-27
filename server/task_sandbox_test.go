@@ -296,3 +296,64 @@ func TestTaskSandboxRetiresAfterCreateContextCancellation(t *testing.T) {
 		t.Fatalf("cancelled creation left a sandbox: runs=%v removed=%v", backend.ran, backend.removed)
 	}
 }
+
+func TestTaskSandboxReleasesTerminalCapacityBeforeNewTask(t *testing.T) {
+	c, store, backend, _ := newSandboxTestController(t)
+	ctx := context.Background()
+	first := agent.RunInfo{TaskID: 7, ExplorationID: 70}
+	second := agent.RunInfo{TaskID: 8, ExplorationID: 80}
+	if _, err := c.Run(ctx, first, "first"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.rows[7].Status = "done"
+	store.mu.Unlock()
+	if _, err := c.Run(ctx, second, "second"); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	if len(backend.removed) != 1 || backend.removed[0] != "handle-7" || backend.created[8] != 1 {
+		backend.mu.Unlock()
+		t.Fatalf("terminal sandbox retained: removed=%v created=%v", backend.removed, backend.created)
+	}
+	backend.mu.Unlock()
+	store.mu.Lock()
+	store.rows[7].Status = "running"
+	store.mu.Unlock()
+	if _, err := c.Run(ctx, first, "revived"); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.created[7] != 2 || len(backend.removed) != 1 {
+		t.Fatalf("revived task did not receive a fresh sandbox: created=%v removed=%v", backend.created, backend.removed)
+	}
+}
+
+func TestTaskSandboxTerminalCleanupFailureBlocksNewCreate(t *testing.T) {
+	c, store, backend, _ := newSandboxTestController(t)
+	ctx := context.Background()
+	if _, err := c.Run(ctx, agent.RunInfo{TaskID: 7, ExplorationID: 70}, "first"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.rows[7].Status = "done"
+	store.mu.Unlock()
+	backend.mu.Lock()
+	backend.removeFail = true
+	backend.mu.Unlock()
+	second := agent.RunInfo{TaskID: 8, ExplorationID: 80}
+	if _, err := c.Run(ctx, second, "blocked"); err == nil {
+		t.Fatal("created a sandbox after terminal cleanup failed")
+	}
+	backend.mu.Lock()
+	if backend.created[8] != 0 {
+		backend.mu.Unlock()
+		t.Fatal("new task reached broker create despite failed retirement")
+	}
+	backend.removeFail = false
+	backend.mu.Unlock()
+	if _, err := c.Run(ctx, second, "retry"); err != nil {
+		t.Fatal(err)
+	}
+}
