@@ -809,6 +809,44 @@ func extractTaskArchivePackageContext(ctx context.Context, path, expectedSHA, de
 	return extractTaskArchiveOpenedContext(ctx, file, expectedSHA, destination)
 }
 
+// openArchiveExtractionRoot anchors the extraction directory to its existing
+// protected parent. A linked final component cannot redirect the archive into
+// a sibling or outside directory, including between Lstat and OpenRoot.
+func openArchiveExtractionRoot(destination string) (*os.Root, error) {
+	leaf := filepath.Base(destination)
+	if leaf == "." || leaf == ".." || leaf == string(filepath.Separator) {
+		return nil, errors.New("invalid archive extraction directory")
+	}
+	parent, err := os.OpenRoot(filepath.Dir(destination))
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	info, err := parent.Lstat(leaf)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := parent.Mkdir(leaf, archiveDirMode); err != nil {
+			return nil, err
+		}
+		info, err = parent.Lstat(leaf)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("archive extraction directory is not a plain directory")
+	}
+	root, err := parent.OpenRoot(leaf)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := root.Stat(".")
+	if err != nil || !os.SameFile(info, opened) {
+		root.Close()
+		return nil, errors.New("archive extraction directory changed during open")
+	}
+	return root, nil
+}
+
 // extractTaskArchiveOpenedContext keeps verification and extraction on the same
 // descriptor. The caller confines a stored local package before opening it.
 func extractTaskArchiveOpenedContext(ctx context.Context, file *os.File, expectedSHA, destination string) error {
@@ -850,10 +888,7 @@ func extractTaskArchiveOpenedContext(ctx context.Context, file *os.File, expecte
 	}
 	defer decoder.Close()
 	tarReader := tar.NewReader(decoder)
-	if err := os.MkdirAll(destination, archiveDirMode); err != nil {
-		return err
-	}
-	destinationRoot, err := os.OpenRoot(destination)
+	destinationRoot, err := openArchiveExtractionRoot(destination)
 	if err != nil {
 		return err
 	}

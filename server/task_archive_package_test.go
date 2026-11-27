@@ -347,3 +347,50 @@ func TestTaskArchiveExtractCannotFollowDestinationSymlink(t *testing.T) {
 		t.Fatalf("archive wrote outside restore root: %v", err)
 	}
 }
+
+func TestTaskArchiveExtractRejectsLinkedDestinationRoot(t *testing.T) {
+	var compressed bytes.Buffer
+	encoder, err := zstd.NewWriter(&compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(encoder)
+	content := []byte("synthetic archive content")
+	if err := tw.WriteHeader(&tar.Header{Name: "new.txt", Mode: 0o600, Size: int64(len(content))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	archive := filepath.Join(base, "fixture.tar.zst")
+	if err := os.WriteFile(archive, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "sentinel.txt"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(base, "restore")
+	if err := os.Symlink(outside, destination); err != nil {
+		t.Skipf("directory symlink unavailable: %v", err)
+	}
+	if err := extractTaskArchivePackage(archive, "", destination); err == nil {
+		t.Fatal("archive accepted a linked extraction root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("archive wrote through linked extraction root: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(outside, "sentinel.txt")); err != nil || string(got) != "original" {
+		t.Fatalf("outside sentinel changed: %q, %v", got, err)
+	}
+}
