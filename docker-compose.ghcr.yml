@@ -74,6 +74,12 @@ services:
     ports:
       - "${ARTEX_BIND_ADDR:-127.0.0.1}:8787:8787"
       - "127.0.0.1:8788:8788"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8787/api/ready"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
     volumes:
       - ./data:/app/data
       - ./keys:/app/keys

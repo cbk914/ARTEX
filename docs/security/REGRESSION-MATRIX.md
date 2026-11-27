@@ -16,7 +16,7 @@ The initial baseline had no passing dynamic security regression. ARTEX-011 and A
 | ARTEX-010 | P2 | PENDING VALIDATION | Bounded resource use | Exhaustion, cleanup, evidence preservation |
 | ARTEX-011 | P1 | CONFIRMED; FIXED LOCALLY | Consistent password version | `TestLoginCannotSignOldPasswordAtNewVersion` failed before and passed after; focused PostgreSQL and race tests passed. See details below. |
 | ARTEX-012 | P2 | CONFIRMED; FIXED LOCALLY | Strict HS256, expiration, subject and explicit password version | `TestSessionJWTRejectsUnsupportedClaimsAndAlgorithms` failed before and passed after; `TestPasswordVersionClaim` passed. See details below. |
-| ARTEX-013 | P2 | PENDING VALIDATION | Safe Docker Desktop deployment and readiness | Config, build, readiness, migration tests |
+| ARTEX-013 | P2 | PARTIAL MITIGATION; VALIDATION OPEN | Safe Docker Desktop deployment and readiness | Compose healthchecks and named-volume overlay validate with `docker compose config`; the current image answered `/api/ready` from inside its container. Branch image build, startup/migration, isolation readiness and disposable-volume rollback remain untested. |
 
 For each validated finding add root cause, affected files, remediation, test command and result, residual risk and commit. A skipped check remains skipped.
 

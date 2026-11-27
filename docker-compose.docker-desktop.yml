@@ -1,0 +1,15 @@
+# Optional overlay for a Docker Desktop deployment that already uses the
+# artex_artex_data, artex_artex_keys, artex_artex_skills and artex_pgdata volumes.
+# Use with docker-compose.yml and project name artex. Verify the resolved mounts
+# before any future `up`; this file does not migrate bind-mounted data.
+services:
+  artex:
+    volumes:
+      - artex_data:/app/data
+      - artex_keys:/app/keys
+      - artex_skills:/app/skills
+
+volumes:
+  artex_data:
+  artex_keys:
+  artex_skills:
