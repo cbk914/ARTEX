@@ -338,6 +338,15 @@ func browserCookieSecure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
+	// A TLS-terminating proxy may forward its internal loopback Host. Either
+	// signal is sufficient to require Secure; a spoof can only make the cookie
+	// more restrictive, never turn Secure off.
+	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	if origin, err := url.Parse(r.Header.Get("Origin")); err == nil && origin.Scheme == "https" {
+		return true
+	}
 	host := strings.ToLower((&url.URL{Host: r.Host}).Hostname())
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return false

@@ -63,6 +63,22 @@ func TestNewSessionsHaveDistinctIdentifiers(t *testing.T) {
 	}
 }
 
+func TestProxyTLSRequiresSecureCookieWithInternalLoopbackHost(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "http://localhost:8787/api/auth/session", nil)
+	if browserCookieSecure(r) {
+		t.Fatal("plain loopback development unexpectedly requires Secure")
+	}
+	r.Header.Set("X-Forwarded-Proto", "https")
+	if !browserCookieSecure(r) {
+		t.Fatal("HTTPS proxy to loopback backend did not require Secure")
+	}
+	r.Header.Del("X-Forwarded-Proto")
+	r.Header.Set("Origin", "https://console.example")
+	if !browserCookieSecure(r) {
+		t.Fatal("HTTPS browser origin did not require Secure")
+	}
+}
+
 func TestBrowserLoginIssuesServerCookieWithoutTokenBody(t *testing.T) {
 	hash, err := bcrypt.GenerateFromPassword([]byte("correct-horse-1"), bcrypt.MinCost)
 	if err != nil {
