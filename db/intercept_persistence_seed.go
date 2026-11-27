@@ -6,8 +6,9 @@ import "fmt"
 // tools that store something the agents load or run later (custom tools, MCP
 // servers, skill files). Each call of those tools is an ask: the operator approves it
 // in the console. Seeded once, behind its own settings flag, like the other built-in
-// seeds, so a later disable by the operator is never undone on restart. No agent tool
-// reads or edits intercept rules, so an agent cannot lower them.
+// seeds, so a later disable by the operator is never undone on restart. A disabled
+// or missing approval rule blocks the corresponding persistent mutation. No agent
+// tool reads or edits intercept rules, so an agent cannot lower them.
 func (d *DB) seedPersistenceApprovalRules() error {
 	if v, _, _ := d.GetSetting("intercept_persistence_rules_v1"); v == "done" {
 		return nil

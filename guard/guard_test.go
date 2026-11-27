@@ -42,6 +42,32 @@ func TestPreToolUsePassthrough(t *testing.T) {
 	}
 }
 
+func TestPersistenceToolWithoutInterceptorIsBlocked(t *testing.T) {
+	for _, tool := range intercept.PersistenceTools {
+		for name, g := range map[string]*Guard{"full": New(), "target-only": NewTargetOnly(nil)} {
+			block, msg := pre(g, context.Background(), tool, `{}`)
+			if !block || !strings.Contains(msg, "operator approval is unavailable") {
+				t.Errorf("%s %s: block=%v message=%q", name, tool, block, msg)
+			}
+		}
+	}
+}
+
+func TestPersistenceToolWithMissingApprovalIsBlocked(t *testing.T) {
+	for _, tool := range intercept.PersistenceTools {
+		for name, makeGuard := range map[string]func(*intercept.Interceptor) *Guard{
+			"full": NewWithInterceptor, "target-only": NewTargetOnly,
+		} {
+			ic := intercept.New(nil)
+			ic.SetRulesForTest(nil)
+			block, msg := pre(makeGuard(ic), context.Background(), tool, `{}`)
+			if !block || !strings.Contains(msg, "operator approval rule is unavailable") {
+				t.Errorf("%s %s: block=%v message=%q", name, tool, block, msg)
+			}
+		}
+	}
+}
+
 // A deny must not leave a prior allow row in the audit ring.
 func TestPreToolUseAuditIsFinalDecision(t *testing.T) {
 	ic := intercept.New(nil)

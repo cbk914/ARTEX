@@ -148,6 +148,9 @@ func (g *Guard) gateScope(ctx context.Context) (intercept.TargetScope, bool) {
 // rule or by the judge does not satisfy the gate; an ask and an unpinned target
 // share one approval request.
 func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event, cmd string) hook.Result {
+	if intercept.IsPersistenceTool(ev.ToolName) && g.interceptor == nil {
+		return g.block(ev.ToolName, systemBlockMessage("persistent platform change blocked: operator approval is unavailable"), cmd)
+	}
 	if g.targetOnly && g.interceptor != nil {
 		// The planner and the main agent run Bash too (#124, F11): the built-in
 		// deny rules apply to them, before the target gate. User rules and the

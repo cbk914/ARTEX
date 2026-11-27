@@ -50,12 +50,18 @@ func TestPersistenceIgnoresOtherTools(t *testing.T) {
 	}
 }
 
-// An operator-disabled built-in rule is not loaded, so nothing answers the call.
-func TestDisabledBuiltinAskDoesNotApply(t *testing.T) {
-	ic := New(nil)
-	ic.SetRulesForTest([]db.InterceptRule{builtinAsk(false)})
-	if _, ok := ic.MatchPersistence("create_custom_tool", nil); ok {
-		t.Fatal("a disabled rule must not answer")
+// A missing or disabled approval rule must never turn a persistent mutation
+// into an ordinary agent tool call, including in a target-only guard.
+func TestPersistenceApprovalUnavailableDeniesEveryMutation(t *testing.T) {
+	for _, name := range PersistenceTools {
+		for _, rules := range [][]db.InterceptRule{nil, {builtinAsk(false)}} {
+			ic := New(nil)
+			ic.SetRulesForTest(rules)
+			dec, ok := ic.MatchPersistence(name, nil)
+			if !ok || dec.Action != "deny" {
+				t.Errorf("%s with unavailable approval: got %+v ok=%v, want deny", name, dec, ok)
+			}
+		}
 	}
 }
 
