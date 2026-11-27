@@ -8,7 +8,8 @@ import (
 // PersistenceTools are the platform tools that store something the agents load or
 // run later: a custom tool (its code runs on the host in later calls), an MCP server
 // (a stdio entry starts its command), a skill file (agents load it as instructions),
-// or the global company asset scope (which changes asset attribution).
+// the global company asset scope (which changes asset attribution), or task
+// goals/constraints after the initial operator-supplied decomposition.
 // A prompt-injected page can make an agent call them, so each call needs operator
 // approval. The approval comes from the built-in ask rules seeded in db
 // ("[built-in] Persistent change: ..."). If a rule is missing or disabled,
@@ -18,6 +19,7 @@ var PersistenceTools = []string{
 	"create_mcp", "update_mcp",
 	"create_skill", "update_skill_file",
 	"add_company_scope",
+	"set_goals", "set_constraints",
 }
 
 // IsPersistenceTool reports whether name is one of PersistenceTools.

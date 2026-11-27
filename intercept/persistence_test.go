@@ -16,9 +16,9 @@ func builtinAsk(enabled bool) db.InterceptRule {
 	}
 }
 
-func TestPersistenceToolsAreSevenNamedTools(t *testing.T) {
-	if len(PersistenceTools) != 7 {
-		t.Fatalf("got %d persistence tools, want 7", len(PersistenceTools))
+func TestPersistenceToolsAreNineNamedTools(t *testing.T) {
+	if len(PersistenceTools) != 9 {
+		t.Fatalf("got %d persistence tools, want 9", len(PersistenceTools))
 	}
 	for _, name := range PersistenceTools {
 		if !IsPersistenceTool(name) {
@@ -45,6 +45,23 @@ func TestCompanyScopeMutationRequiresOperatorApproval(t *testing.T) {
 	ic.SetRulesForTest(nil)
 	if dec, ok := ic.MatchPersistence("add_company_scope", nil); !ok || dec.Action != "deny" {
 		t.Fatalf("company scope mutation allowed without its approval rule: %+v ok=%v", dec, ok)
+	}
+}
+
+func TestRuntimeGoalAndConstraintMutationsRequireOperatorApproval(t *testing.T) {
+	for _, name := range []string{"set_goals", "set_constraints"} {
+		if !IsPersistenceTool(name) {
+			t.Errorf("%s can change task direction without an approval", name)
+			continue
+		}
+		ic := New(nil)
+		ic.SetRulesForTest([]db.InterceptRule{{
+			ID: 8, Name: "[built-in] Persistent change: task control", Enabled: true, Priority: 95,
+			MatchTarget: "tool_name", MatchType: "regex", Pattern: `^(?:set_goals|set_constraints)$`, Action: "ask",
+		}})
+		if dec, ok := ic.MatchPersistence(name, nil); !ok || dec.Action != "ask" {
+			t.Errorf("%s skipped approval: %+v ok=%v", name, dec, ok)
+		}
 	}
 }
 

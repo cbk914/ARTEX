@@ -283,7 +283,9 @@ worker remains confined to the intent it claimed.
 - **Company-scoped asset graph**: shared across tasks, deduplicated by the program, with
   domain → subdomain → service → endpoint containment. Agent calls that change
   a company's asset scope require operator approval; if the approval rule is
-  unavailable, the change is denied.
+  unavailable, the change is denied. Runtime agent additions to task goals or
+  operation constraints also require approval. Initial decomposition of the
+  operator-submitted task text retains its existing automatic flow.
 - **ScopeSentry sync**: pull asset data from a
   [ScopeSentry](https://github.com/Autumn-27/ScopeSentry) instance by project or task, merged by
   company scope into the asset graph for agents to explore.

@@ -55,3 +55,27 @@ func TestSeedCompanyScopeApprovalRuleIsIdempotent(t *testing.T) {
 		t.Fatalf("seed marker=%q, want done", v)
 	}
 }
+
+func TestSeedTaskControlApprovalRulesAreIdempotent(t *testing.T) {
+	d := openTargetDB(t)
+	for range 2 {
+		if _, err := d.Exec(`DELETE FROM settings WHERE key = 'intercept_persistence_rules_v3'`); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.seedTaskControlApprovalRules(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, rule := range []struct{ name, pattern string }{
+		{"[built-in] Persistent change: task goals", "^set_goals$"},
+		{"[built-in] Persistent change: task constraints", "^set_constraints$"},
+	} {
+		var count int
+		if err := d.QueryRow(`SELECT count(*) FROM intercept_rules WHERE name=$1 AND pattern=$2 AND action='ask'`, rule.name, rule.pattern).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Errorf("rule %q count=%d, want 1", rule.name, count)
+		}
+	}
+}

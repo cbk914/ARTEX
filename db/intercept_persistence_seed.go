@@ -69,3 +69,31 @@ WHERE NOT EXISTS (SELECT 1 FROM intercept_rules WHERE name = $1)`, name); err !=
 	}
 	return d.SetSetting("intercept_persistence_rules_v2", "done")
 }
+
+// seedTaskControlApprovalRules protects runtime agent changes to a task's goals
+// and operation constraints. The initial goal decomposition uses only the
+// operator-submitted task text and runs without a guard; runtime planner/main
+// calls are guarded and require an exact-call operator approval.
+func (d *DB) seedTaskControlApprovalRules() error {
+	if v, _, _ := d.GetSetting("intercept_persistence_rules_v3"); v == "done" {
+		return nil
+	}
+	for _, rule := range []struct{ name, pattern, message string }{
+		{
+			"[built-in] Persistent change: task goals", "^set_goals$",
+			"Approval needed: the agent asks to add goals to this task. Review that each goal follows the operator's request and does not expand the engagement.",
+		},
+		{
+			"[built-in] Persistent change: task constraints", "^set_constraints$",
+			"Approval needed: the agent asks to add operation constraints to this task. Review allow constraints especially; they do not grant network authorization.",
+		},
+	} {
+		if _, err := d.Exec(`
+INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
+SELECT $1, true, 95, 'tool_name', 'regex', $2, 'ask', $3, false, 60, 'deny'
+WHERE NOT EXISTS (SELECT 1 FROM intercept_rules WHERE name = $1)`, rule.name, rule.pattern, rule.message); err != nil {
+			return fmt.Errorf("rule %q: %w", rule.name, err)
+		}
+	}
+	return d.SetSetting("intercept_persistence_rules_v3", "done")
+}

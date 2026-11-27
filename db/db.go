@@ -357,6 +357,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedCompanyScopeApprovalRule(); err != nil {
 		return fmt.Errorf("seed company scope approval rule: %w", err)
 	}
+	if err := d.seedTaskControlApprovalRules(); err != nil {
+		return fmt.Errorf("seed task control approval rules: %w", err)
+	}
 	if err := d.seedDefaultInterceptRulesV2(); err != nil {
 		return fmt.Errorf("seed intercept rules v2: %w", err)
 	}
