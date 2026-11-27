@@ -146,11 +146,12 @@ export default function WorkspacePage() {
 
   const doUpload = (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    const target = path || "workspace";
     api
-      .workspaceUpload(path, Array.from(files))
+      .workspaceUpload(target, Array.from(files))
       .then((r) => {
         toast.success(t("Uploaded {count} files", { count: r.uploaded }));
-        load(path);
+        load(target);
       })
       .catch((err) => toast.error(t("Upload failed: {error}", { error: (err as Error).message })))
       .finally(() => {
@@ -161,14 +162,15 @@ export default function WorkspacePage() {
   const doMkdir = () => {
     const name = mkdirName.trim();
     if (!name) return;
-    const target = path ? `${path}/${name}` : name;
+    const parent = path || "workspace";
+    const target = `${parent}/${name}`;
     api
       .workspaceMkdir(target)
       .then(() => {
         toast.success(t("Directory created"));
         setMkdirOpen(false);
         setMkdirName("");
-        load(path);
+        load(parent);
       })
       .catch((err) => toast.error(t("Create failed: {error}", { error: (err as Error).message })));
   };
@@ -273,15 +275,17 @@ export default function WorkspacePage() {
                           <DownloadIcon className="size-3.5" />
                         </Button>
                       )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-destructive size-7"
-                        title={t("Delete")}
-                        onClick={() => del(e)}
-                      >
-                        <Trash2Icon className="size-3.5" />
-                      </Button>
+                      {path !== "" && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-destructive size-7"
+                          title={t("Delete")}
+                          onClick={() => del(e)}
+                        >
+                          <Trash2Icon className="size-3.5" />
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>

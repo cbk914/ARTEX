@@ -9,6 +9,44 @@ import (
 	"testing"
 )
 
+// A parent that was inside workspace can be replaced with a symlink to a
+// private sibling after path validation. The descriptor root must be the
+// workspace namespace, not the whole data directory.
+func TestWorkspaceParentSwapCannotEnterPrivateDataRoot(t *testing.T) {
+	data := t.TempDir()
+	parent := filepath.Join(data, "workspace", "run")
+	private := filepath.Join(data, "traffic")
+	for _, dir := range []string{parent, private} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	privateFile := filepath.Join(private, "secret.txt")
+	if err := os.WriteFile(privateFile, []byte("PRIVATE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{m: &Manager{dir: data}}
+	readPath, ok := s.wsResolveConfined("workspace/run/secret.txt")
+	if !ok {
+		t.Fatal("allowed workspace path was refused before the swap")
+	}
+	if err := os.Rename(parent, parent+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	mustSymlink(t, filepath.Join("..", "..", "traffic"), parent)
+	if f, err := openWorkspaceResolved(readPath); err == nil {
+		body, readErr := io.ReadAll(f)
+		f.Close()
+		if readErr == nil && string(body) == "PRIVATE" {
+			t.Fatal("read entered a private data-root sibling after parent swap")
+		}
+	}
+	_ = writeWorkspaceResolved(context.Background(), readPath, []byte("CHANGED"))
+	if body, err := os.ReadFile(privateFile); err != nil || string(body) != "PRIVATE" {
+		t.Fatalf("write changed private data-root file: %q, %v", body, err)
+	}
+}
+
 // The path is validated while parent is a real directory. An attacker then
 // replaces that directory with a link before the privileged open.
 func TestWorkspaceReadParentSwapCannotEscape(t *testing.T) {
@@ -29,7 +67,7 @@ func TestWorkspaceReadParentSwapCannotEscape(t *testing.T) {
 		}
 	}
 	s := newTestWorkspaceServer(root)
-	cp, ok := s.wsResolveConfined("run/note.txt")
+	cp, ok := s.wsResolveConfined("workspace/run/note.txt")
 	if !ok {
 		t.Fatal("fixture path was not accepted")
 	}
@@ -70,7 +108,7 @@ func TestWorkspaceWriteParentSwapCannotEscape(t *testing.T) {
 		}
 	}
 	s := newTestWorkspaceServer(root)
-	cp, ok := s.wsResolveConfined("run/note.txt")
+	cp, ok := s.wsResolveConfined("workspace/run/note.txt")
 	if !ok {
 		t.Fatal("fixture path was not accepted")
 	}
@@ -85,7 +123,7 @@ func TestWorkspaceWriteParentSwapCannotEscape(t *testing.T) {
 }
 
 func TestWorkspaceWritePreservesExistingModeAndCreatesParent(t *testing.T) {
-	root := t.TempDir()
+	root := newWorkspaceTestDir(t)
 	existing := filepath.Join(root, "note.txt")
 	if err := os.WriteFile(existing, []byte("before"), 0o600); err != nil {
 		t.Fatal(err)
@@ -115,13 +153,13 @@ func TestWorkspaceWritePreservesExistingModeAndCreatesParent(t *testing.T) {
 }
 
 func TestWorkspaceCancelledUploadPreservesExistingFile(t *testing.T) {
-	root := t.TempDir()
+	root := newWorkspaceTestDir(t)
 	path := filepath.Join(root, "note.txt")
 	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s := newTestWorkspaceServer(root)
-	cp, ok := s.wsResolveConfined("note.txt")
+	cp, ok := s.wsResolveConfined("workspace/note.txt")
 	if !ok {
 		t.Fatal("fixture path was not accepted")
 	}
@@ -160,7 +198,7 @@ func TestWorkspaceOverwriteDoesNotMutateOutsideHardlink(t *testing.T) {
 		t.Skipf("hardlinks unavailable: %v", err)
 	}
 	s := newTestWorkspaceServer(root)
-	cp, ok := s.wsResolveConfined("note.txt")
+	cp, ok := s.wsResolveConfined("workspace/note.txt")
 	if !ok {
 		t.Fatal("fixture path was not accepted")
 	}
@@ -185,7 +223,7 @@ func TestWorkspaceMkdirParentSwapCannotEscape(t *testing.T) {
 		}
 	}
 	s := newTestWorkspaceServer(root)
-	cp, ok := s.wsResolveConfined("run/newdir")
+	cp, ok := s.wsResolveConfined("workspace/run/newdir")
 	if !ok {
 		t.Fatal("fixture path was not accepted")
 	}
@@ -213,7 +251,7 @@ func TestWorkspaceDeleteParentSwapCannotEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := newTestWorkspaceServer(root)
-	cp, ok := s.wsResolveConfined("run/victim")
+	cp, ok := s.wsResolveConfined("workspace/run/victim")
 	if !ok {
 		t.Fatal("fixture path was not accepted")
 	}
@@ -241,7 +279,7 @@ func TestWorkspaceUploadParentSwapCannotEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := newTestWorkspaceServer(root)
-	cp, ok := s.wsResolveConfined("run/note.txt")
+	cp, ok := s.wsResolveConfined("workspace/run/note.txt")
 	if !ok {
 		t.Fatal("fixture path was not accepted")
 	}
@@ -257,12 +295,12 @@ func TestWorkspaceUploadParentSwapCannotEscape(t *testing.T) {
 }
 
 func TestWorkspaceDownloadRangeStillWorks(t *testing.T) {
-	root := t.TempDir()
+	root := newWorkspaceTestDir(t)
 	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("abcdef"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s := newTestWorkspaceServer(root)
-	r := httptest.NewRequest("GET", "/api/workspace/download?path=note.txt", nil)
+	r := httptest.NewRequest("GET", "/api/workspace/download?path=workspace/note.txt", nil)
 	r.Header.Set("Range", "bytes=1-3")
 	w := httptest.NewRecorder()
 	s.wsDownload(w, r)
@@ -290,7 +328,7 @@ func TestWorkspaceListUsesOpenedDirectoryAfterParentSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := newTestWorkspaceServer(root)
-	cp, ok := s.wsResolveConfined("run")
+	cp, ok := s.wsResolveConfined("workspace/run")
 	if !ok {
 		t.Fatal("fixture path was not accepted")
 	}

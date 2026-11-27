@@ -80,7 +80,7 @@ type symlinkFixture struct {
 func newSymlinkFixture(t *testing.T) symlinkFixture {
 	t.Helper()
 	base := t.TempDir()
-	root := filepath.Join(base, "root")
+	root := filepath.Join(base, "root", "workspace")
 	outside := filepath.Join(base, "outside")
 	outsideDir := filepath.Join(outside, "dir")
 	subdir := filepath.Join(root, "subdir")
@@ -114,8 +114,8 @@ func newSymlinkFixture(t *testing.T) symlinkFixture {
 	mustSymlink(t, "missing-inside.txt", filepath.Join(root, "broken-in"))
 	mustSymlink(t, "loop-b", filepath.Join(root, "loop-a"))
 	mustSymlink(t, "loop-a", filepath.Join(root, "loop-b"))
-	mustSymlink(t, filepath.Join("..", "..", "outside", "secret.txt"), filepath.Join(subdir, "rel-escape-file"))
-	mustSymlink(t, filepath.Join("..", "..", "outside", "dir"), filepath.Join(subdir, "rel-escape-dir"))
+	mustSymlink(t, filepath.Join("..", "..", "..", "outside", "secret.txt"), filepath.Join(subdir, "rel-escape-file"))
+	mustSymlink(t, filepath.Join("..", "..", "..", "outside", "dir"), filepath.Join(subdir, "rel-escape-dir"))
 	mustSymlink(t, filepath.Join("..", "inside.txt"), filepath.Join(subdir, "rel-inside"))
 
 	return symlinkFixture{
@@ -127,13 +127,40 @@ func newSymlinkFixture(t *testing.T) symlinkFixture {
 }
 
 func newTestWorkspaceServer(root string) *Server {
+	if filepath.Base(root) == "workspace" {
+		root = filepath.Dir(root)
+	}
 	return &Server{m: &Manager{dir: root}}
+}
+
+func wsTestPath(path string) string {
+	if path == "" {
+		return "workspace"
+	}
+	return "workspace/" + path
+}
+
+func newWorkspaceTestDir(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func doJSONReq(t *testing.T, method, target string, payload any, h http.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
 	var body bytes.Buffer
 	if payload != nil {
+		if fields, ok := payload.(map[string]string); ok && strings.HasPrefix(target, "/api/workspace/") {
+			copyFields := make(map[string]string, len(fields))
+			for k, v := range fields {
+				copyFields[k] = v
+			}
+			copyFields["path"] = wsTestPath(copyFields["path"])
+			payload = copyFields
+		}
 		if err := json.NewEncoder(&body).Encode(payload); err != nil {
 			t.Fatal(err)
 		}
@@ -159,7 +186,7 @@ func doUploadReq(t *testing.T, s *Server, dirPath, filename, content string) *ht
 	if err := mw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/workspace/upload?path="+url.QueryEscape(dirPath), &body)
+	req := httptest.NewRequest(http.MethodPost, "/api/workspace/upload?path="+url.QueryEscape(wsTestPath(dirPath)), &body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	rr := httptest.NewRecorder()
 	s.wsUpload(rr, req)
@@ -187,7 +214,7 @@ func TestWorkspaceListSymlinkConfinement(t *testing.T) {
 	}
 	for _, tc := range rejectCases {
 		t.Run("reject_"+tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/workspace/list?path="+url.QueryEscape(tc.path), nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/workspace/list?path="+url.QueryEscape(wsTestPath(tc.path)), nil)
 			rr := httptest.NewRecorder()
 			s.wsList(rr, req)
 			if rr.Code != http.StatusBadRequest {
@@ -199,7 +226,7 @@ func TestWorkspaceListSymlinkConfinement(t *testing.T) {
 
 	for _, okPath := range []string{"in-dir-rel", "in-dir-abs"} {
 		t.Run("allow_"+okPath, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/workspace/list?path="+url.QueryEscape(okPath), nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/workspace/list?path="+url.QueryEscape(wsTestPath(okPath)), nil)
 			rr := httptest.NewRecorder()
 			s.wsList(rr, req)
 			if rr.Code != http.StatusOK {
@@ -233,7 +260,7 @@ func TestWorkspaceReadSymlinkConfinement(t *testing.T) {
 	}
 	for _, tc := range rejectCases {
 		t.Run("reject_"+tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/workspace/read?path="+url.QueryEscape(tc.path), nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/workspace/read?path="+url.QueryEscape(wsTestPath(tc.path)), nil)
 			rr := httptest.NewRecorder()
 			s.wsRead(rr, req)
 			if rr.Code != http.StatusBadRequest {
@@ -258,7 +285,7 @@ func TestWorkspaceReadSymlinkConfinement(t *testing.T) {
 	}
 	for _, tc := range allowCases {
 		t.Run("allow_"+tc.path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/workspace/read?path="+url.QueryEscape(tc.path), nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/workspace/read?path="+url.QueryEscape(wsTestPath(tc.path)), nil)
 			rr := httptest.NewRecorder()
 			s.wsRead(rr, req)
 			if rr.Code != http.StatusOK {
@@ -400,7 +427,7 @@ func TestWorkspaceMkdirSymlinkConfinement(t *testing.T) {
 func TestWorkspaceDeleteSymlinkConfinement(t *testing.T) {
 	f := newSymlinkFixture(t)
 	s := newTestWorkspaceServer(f.root)
-	mustSymlink(t, ".", filepath.Join(f.root, "root-link"))
+	mustSymlink(t, "..", filepath.Join(f.root, "root-link"))
 
 	rejectCases := []struct {
 		name string
@@ -420,7 +447,7 @@ func TestWorkspaceDeleteSymlinkConfinement(t *testing.T) {
 	}
 	for _, tc := range rejectCases {
 		t.Run("reject_"+tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodDelete, "/api/workspace/delete?path="+url.QueryEscape(tc.path), nil)
+			req := httptest.NewRequest(http.MethodDelete, "/api/workspace/delete?path="+url.QueryEscape(wsTestPath(tc.path)), nil)
 			rr := httptest.NewRecorder()
 			s.wsDelete(rr, req)
 			if rr.Code != http.StatusBadRequest {
@@ -439,7 +466,7 @@ func TestWorkspaceDeleteSymlinkConfinement(t *testing.T) {
 
 	// Deleting an in-root symlink removes the symlink itself and preserves its target.
 	t.Run("allow_delete_inside_symlink", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodDelete, "/api/workspace/delete?path=in-file-rel", nil)
+		req := httptest.NewRequest(http.MethodDelete, "/api/workspace/delete?path=workspace/in-file-rel", nil)
 		rr := httptest.NewRecorder()
 		s.wsDelete(rr, req)
 		if rr.Code != http.StatusOK {
@@ -455,7 +482,7 @@ func TestWorkspaceDeleteSymlinkConfinement(t *testing.T) {
 
 	// Deleting a file through an inside directory symlink works.
 	t.Run("allow_delete_through_inside_dir_symlink", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodDelete, "/api/workspace/delete?path=in-dir-rel/nested.txt", nil)
+		req := httptest.NewRequest(http.MethodDelete, "/api/workspace/delete?path=workspace/in-dir-rel/nested.txt", nil)
 		rr := httptest.NewRecorder()
 		s.wsDelete(rr, req)
 		if rr.Code != http.StatusOK {
@@ -488,7 +515,7 @@ func TestWorkspaceDownloadSymlinkConfinement(t *testing.T) {
 	}
 	for _, tc := range rejectCases {
 		t.Run("reject_"+tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/workspace/download?path="+url.QueryEscape(tc.path), nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/workspace/download?path="+url.QueryEscape(wsTestPath(tc.path)), nil)
 			rr := httptest.NewRecorder()
 			s.wsDownload(rr, req)
 			if rr.Code != http.StatusBadRequest {
@@ -507,7 +534,7 @@ func TestWorkspaceDownloadSymlinkConfinement(t *testing.T) {
 		{"in-dir-rel/nested.txt", "NESTED_OK"},
 	} {
 		t.Run("allow_"+tc.path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/workspace/download?path="+url.QueryEscape(tc.path), nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/workspace/download?path="+url.QueryEscape(wsTestPath(tc.path)), nil)
 			rr := httptest.NewRecorder()
 			s.wsDownload(rr, req)
 			if rr.Code != http.StatusOK {

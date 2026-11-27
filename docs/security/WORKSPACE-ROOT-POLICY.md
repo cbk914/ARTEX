@@ -1,0 +1,19 @@
+# Workspace root policy and migration
+
+The workspace file manager now accepts only four top-level namespaces below the data directory: `tasks`, `sessions`, `drafts`, and `workspace`. `workspace` is the general user-managed area. The other three retain task, chat and staged-draft browsing. The data directory itself is a navigation point, not a writable or upload destination. Its listing shows only existing allowed directories. The four namespace roots cannot be deleted through the workspace API.
+
+Every workspace route resolves the requested path, checks both its entry path and its canonical target against the allowlist, and then performs filesystem work through an `os.Root` opened at the allowed namespace. The namespace must be a real directory, and the opened descriptor must refer to the same directory checked immediately before opening. Root listing alone opens the data directory. An alias inside an allowed namespace to `traffic`, `exec-home`, `exec-scripts`, `spill`, `transcripts`, `operator-evidence`, an unknown future root, or outside the data directory is refused. The earlier deny list for private traffic and evidence paths remains as a second check.
+
+At server startup, `workspace` is created if absent. An existing directory is left unchanged. A file or symlink at that name makes startup fail rather than redirecting the namespace. The browser routes new folders and uploads from its top-level view into `workspace/` and hides deletion of namespace roots.
+
+## Existing data and deployment gate
+
+No existing file or directory is renamed, removed or copied by this change. Files under a previously used, unlisted top-level directory remain on disk but are no longer reachable through the workspace file manager. The read-only inventory of the current operational data mount on 2026-11-27 showed `exec-home`, `exec-scripts`, `sessions`, `spill`, `tasks`, `traffic`, and `transcripts`; it showed no loose user directory or file at the top level. This observation must be repeated against the exact deployment volume before switching the image.
+
+If the deployment preflight finds user artifacts at an unlisted top-level path, first back up the data volume. Review each path's ownership and purpose, copy only approved user artifacts under `workspace/legacy/`, verify file counts and hashes, and keep the originals until the operator accepts the new view. Do not move platform directories into `workspace` or create a symlink to them. Rollback uses the previous image and leaves the volume intact; remove the new empty `workspace` directory only after confirming it contains no user data.
+
+## Validation and limits
+
+The route-by-route regression checks that listing, reading, downloading, writing, mkdir, deletion and upload refuse private roots, that an allowed-root symlink cannot reach `traffic`, and that ordinary writes under `workspace/` still work. It also checks non-destructive startup and rejects a file or symlink at the new namespace, including at descriptor open. Migrated symlink, parent-swap, cancellation, hardlink and range tests pass. Focused and full PostgreSQL-backed race tests, `go vet ./server`, Windows and macOS server cross-compilation, frontend TypeScript and a disposable production frontend build passed. The full race run used a mode-0755 compiled test binary because Go's temporary binary was not executable by six tests that lower UID; those six failed with permission errors on the first attempt and passed through the executable binary.
+
+This is an HTTP file-manager boundary. It does not make the shared executor UID, HOME, task directories or process/network namespaces campaign-private; ARTEX-001/004/005 remain open. A privileged host operator can still inspect the volume directly. Windows file-specific ACL retention and multi-file upload transactions also remain unverified.

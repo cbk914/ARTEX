@@ -407,6 +407,22 @@ func (m *Manager) SetWorkers(n int) error {
 // Enrich returns the asset auto-completion engine (may be nil if init failed).
 func (m *Manager) Enrich() *enrich.Engine { return m.enrich }
 
+// prepareWorkspaceRoot creates the user-managed namespace and refuses a
+// pre-existing symlink or file at that name.
+func prepareWorkspaceRoot(dataDir string) error {
+	// General user-managed files live below an explicit namespace. Existing
+	// top-level platform data is left in place and remains outside the browser.
+	workspaceDir := filepath.Join(dataDir, "workspace")
+	if err := os.Mkdir(workspaceDir, 0o755); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("prepare workspace root: %w", err)
+	}
+	fi, err := os.Lstat(workspaceDir)
+	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("workspace root is not a real directory: %s", workspaceDir)
+	}
+	return nil
+}
+
 // NewManager connects to PostgreSQL and, if proxyAddr is non-empty, starts the
 // traffic-recording proxy. PostgreSQL is required (it is the single data source).
 func NewManager(dir, proxyAddr string) (*Manager, error) {
@@ -424,6 +440,9 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		dir = abs
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := prepareWorkspaceRoot(dir); err != nil {
 		return nil, err
 	}
 	dsn, source, err := pgdb.DSN()

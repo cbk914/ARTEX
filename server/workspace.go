@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -17,13 +18,36 @@ import (
 
 // Workspace file manager — browse / view / edit / download / upload / delete the
 // shared work dir (s.m.dir), where agents write their artifacts. Path validation
-// rejects traversal; filesystem operations open through an os.Root. An explicit
-// allowed-root policy is still needed. All routes sit behind requireAuth (Handler()).
+// rejects traversal and restricts access to the named user-facing roots;
+// filesystem operations open through an os.Root. All routes sit behind requireAuth.
 
 const (
 	maxWorkspaceRead   = 2 << 20   // 2 MiB: files bigger than this aren't inlined for view/edit (download instead)
 	maxWorkspaceUpload = 512 << 20 // 512 MiB per upload request
 )
+
+var workspaceAllowedRoots = map[string]bool{
+	"tasks": true, "sessions": true, "drafts": true, "workspace": true,
+}
+
+// workspacePathAllowed checks a path against the explicit top-level namespaces.
+// The data root itself is only a navigation point; callers separately restrict
+// mutations there. Both the lexical entry and resolved target must pass this
+// check, so an in-root symlink cannot alias a platform-private directory.
+func workspacePathAllowed(realRoot, path string) bool {
+	rel, err := filepath.Rel(realRoot, path)
+	if err != nil || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	first := strings.Split(rel, string(filepath.Separator))[0]
+	if runtime.GOOS == "windows" {
+		first = strings.ToLower(strings.TrimRight(first, ". "))
+	}
+	return workspaceAllowedRoots[first]
+}
 
 // wsResolveConfined maps a user-supplied relative path to a canonicalized path
 // inside the work dir, resolving symlinks in every component and rejecting any
@@ -33,7 +57,14 @@ func (s *Server) wsResolveConfined(rel string) (confinedPath, bool) {
 	if err != nil {
 		return confinedPath{}, false
 	}
-	if workspacePathDenied(cp.realRoot, cp.realPath) {
+	segs, err := splitRelSegments(rel, true)
+	if err != nil {
+		return confinedPath{}, false
+	}
+	if len(segs) > 0 && cp.realPath == cp.realRoot {
+		return confinedPath{}, false
+	}
+	if !workspacePathAllowed(cp.realRoot, cp.entryPath) || !workspacePathAllowed(cp.realRoot, cp.realPath) || workspacePathDenied(cp.realRoot, cp.realPath) {
 		return confinedPath{}, false
 	}
 	return cp, true
@@ -144,6 +175,14 @@ func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]wsEntry, 0, len(ents))
 	for _, e := range ents {
+		if abs == cp.realRoot {
+			if !e.IsDir() {
+				continue
+			}
+			if _, allowed := s.wsResolveConfined(e.Name()); !allowed {
+				continue
+			}
+		}
 		info, err := e.Info()
 		if err != nil {
 			continue
@@ -247,7 +286,7 @@ func (s *Server) wsWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cp, ok := s.wsResolveConfined(req.Path)
-	if !ok || cp.realPath == cp.realRoot {
+	if !ok || cp.realPath == cp.realRoot || filepath.Dir(cp.entryPath) == cp.realRoot {
 		writeErr(w, 400, "invalid path")
 		return
 	}
@@ -285,7 +324,7 @@ func (s *Server) wsMkdir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cp, ok := s.wsResolveConfined(req.Path)
-	if !ok || cp.realPath == cp.realRoot {
+	if !ok || cp.realPath == cp.realRoot || filepath.Dir(cp.entryPath) == cp.realRoot {
 		writeErr(w, 400, "invalid path")
 		return
 	}
@@ -319,6 +358,10 @@ func (s *Server) wsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if cp.realPath == cp.realRoot {
 		writeErr(w, 400, "cannot delete the workspace root directory")
+		return
+	}
+	if filepath.Dir(cp.entryPath) == cp.realRoot {
+		writeErr(w, 400, "cannot delete a workspace namespace root")
 		return
 	}
 	// entryPath is what RemoveAll removes: a symlink is removed as a link, a
@@ -365,7 +408,7 @@ func (s *Server) wsDownload(w http.ResponseWriter, r *http.Request) {
 // POST /api/workspace/upload?path=<dir> — multipart form field "file" (one or more).
 func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 	dir, ok := s.wsResolveConfined(r.URL.Query().Get("path"))
-	if !ok {
+	if !ok || dir.realPath == dir.realRoot {
 		writeErr(w, 400, "invalid path")
 		return
 	}
