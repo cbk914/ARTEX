@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -214,37 +213,7 @@ func saveChatUpload(dir *os.Root, hdr *multipart.FileHeader, name string, ctx co
 			_ = dir.Remove(savedName)
 		}
 	}()
-	buf := make([]byte, 32<<10)
-	var written int64
-	for {
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		n, readErr := src.Read(buf)
-		if n > 0 {
-			if written+int64(n) > hdr.Size || written+int64(n) > maxChatUpload {
-				return "", fmt.Errorf("upload exceeds declared size")
-			}
-			nw, err := out.Write(buf[:n])
-			written += int64(nw)
-			if err != nil {
-				return "", err
-			}
-			if nw != n {
-				return "", io.ErrShortWrite
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return "", readErr
-		}
-	}
-	if written != hdr.Size {
-		return "", fmt.Errorf("incomplete upload")
-	}
-	if err := ctx.Err(); err != nil {
+	if err := copyUploadBounded(ctx, out, src, hdr.Size, maxChatUpload); err != nil {
 		return "", err
 	}
 	if err := out.Close(); err != nil {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -16,9 +17,8 @@ import (
 
 // Workspace file manager — browse / view / edit / download / upload / delete the
 // shared work dir (s.m.dir), where agents write their artifacts. Path validation
-// rejects traversal; list/read/download also open through an os.Root. The
-// remaining write and delete paths need the same descriptor confinement and an
-// explicit allowed-root policy. All routes sit behind requireAuth (Handler()).
+// rejects traversal; filesystem operations open through an os.Root. An explicit
+// allowed-root policy is still needed. All routes sit behind requireAuth (Handler()).
 
 const (
 	maxWorkspaceRead   = 2 << 20   // 2 MiB: files bigger than this aren't inlined for view/edit (download instead)
@@ -169,11 +169,7 @@ func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 // GET /api/workspace/read?path=<rel> — inline text for view/edit. Binary or oversize
 // files return {binary:true}/{too_large:true} with no content (use download instead).
 func openWorkspaceResolved(cp confinedPath) (*os.File, error) {
-	rel, err := filepath.Rel(cp.realRoot, cp.realPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return nil, errPathEscape
-	}
-	root, err := os.OpenRoot(cp.realRoot)
+	root, rel, err := openWorkspaceRoot(cp)
 	if err != nil {
 		return nil, err
 	}
@@ -228,6 +224,53 @@ func (s *Server) wsRead(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/workspace/write  {path, content} — create/overwrite a text file.
+func openWorkspaceWriteResolved(cp confinedPath) (*os.File, error) {
+	root, rel, err := openWorkspaceRoot(cp)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	if rel == "." {
+		return nil, errPathEscape
+	}
+	if err := root.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
+		return nil, err
+	}
+	f, err := openWorkspaceWriteCandidate(root, rel)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf("target is not a regular file")
+	}
+	return f, nil
+}
+
+func writeWorkspaceResolved(cp confinedPath, content []byte) error {
+	f, err := openWorkspaceWriteResolved(cp)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	n, err := f.Write(content)
+	if err != nil {
+		return err
+	}
+	if n != len(content) {
+		return io.ErrShortWrite
+	}
+	return f.Close()
+}
+
 func (s *Server) wsWrite(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path    string `json:"path"`
@@ -247,11 +290,7 @@ func (s *Server) wsWrite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "target is a directory")
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		writeErr(w, 500, safeFSErr(err))
-		return
-	}
-	if err := os.WriteFile(abs, []byte(req.Content), 0o644); err != nil {
+	if err := writeWorkspaceResolved(cp, []byte(req.Content)); err != nil {
 		writeErr(w, 500, safeFSErr(err))
 		return
 	}
@@ -259,6 +298,18 @@ func (s *Server) wsWrite(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/workspace/mkdir  {path}
+func mkdirWorkspaceResolved(cp confinedPath) error {
+	root, rel, err := openWorkspaceRoot(cp)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if rel == "." {
+		return errPathEscape
+	}
+	return root.MkdirAll(rel, 0o755)
+}
+
 func (s *Server) wsMkdir(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path string `json:"path"`
@@ -273,7 +324,7 @@ func (s *Server) wsMkdir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	abs := cp.realPath
-	if err := os.MkdirAll(abs, 0o755); err != nil {
+	if err := mkdirWorkspaceResolved(cp); err != nil {
 		writeErr(w, 500, safeFSErr(err))
 		return
 	}
@@ -282,6 +333,18 @@ func (s *Server) wsMkdir(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/workspace/delete?path=<rel> — removes a file or a directory tree
 // (confined to the work dir; the root itself can't be deleted).
+func deleteWorkspaceResolved(cp confinedPath) error {
+	root, rel, err := openWorkspaceRootPath(cp.realRoot, cp.entryPath)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if rel == "." {
+		return errPathEscape
+	}
+	return root.RemoveAll(rel)
+}
+
 func (s *Server) wsDelete(w http.ResponseWriter, r *http.Request) {
 	cp, ok := s.wsResolveConfined(r.URL.Query().Get("path"))
 	if !ok {
@@ -302,7 +365,7 @@ func (s *Server) wsDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "path does not exist")
 		return
 	}
-	if err := os.RemoveAll(cp.entryPath); err != nil {
+	if err := deleteWorkspaceResolved(cp); err != nil {
 		writeErr(w, 500, safeFSErr(err))
 		return
 	}
@@ -340,7 +403,14 @@ func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid path")
 		return
 	}
-	if fi, err := os.Stat(dir.realPath); err != nil || !fi.IsDir() {
+	dirFile, err := openWorkspaceResolved(dir)
+	if err != nil {
+		writeErr(w, 400, "target directory does not exist")
+		return
+	}
+	fi, err := dirFile.Stat()
+	dirFile.Close()
+	if err != nil || !fi.IsDir() {
 		writeErr(w, 400, "target directory does not exist")
 		return
 	}
@@ -349,6 +419,7 @@ func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "failed to parse upload or size limit exceeded: "+err.Error())
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 	files := r.MultipartForm.File["file"]
 	if len(files) == 0 {
 		writeErr(w, 400, "missing upload file (form field file)")
@@ -370,7 +441,7 @@ func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "invalid path")
 			return
 		}
-		if err := saveUpload(hdr, dest.realPath); err != nil {
+		if err := saveUpload(r.Context(), hdr, dest); err != nil {
 			writeErr(w, 500, safeFSErr(err))
 			return
 		}
@@ -379,22 +450,27 @@ func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"uploaded": saved})
 }
 
-func saveUpload(hdr *multipart.FileHeader, dest string) error {
-	if err := refuseUploadSymlink(dest); err != nil {
-		return err
+func saveUpload(ctx context.Context, hdr *multipart.FileHeader, dest confinedPath) error {
+	if hdr.Size < 0 || hdr.Size > maxWorkspaceUpload {
+		return fmt.Errorf("upload exceeds size limit")
 	}
 	src, err := hdr.Open()
 	if err != nil {
 		return err
 	}
 	defer src.Close()
-	out, err := openUploadFileNoFollow(dest)
+	out, err := openWorkspaceWriteResolved(dest)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	_, err = io.Copy(out, src)
-	return err
+	if err := out.Truncate(0); err != nil {
+		return err
+	}
+	if err := copyUploadBounded(ctx, out, src, hdr.Size, maxWorkspaceUpload); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 // refuseUploadSymlink rejects a destination that is already a symlink. os.Create
