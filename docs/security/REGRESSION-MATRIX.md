@@ -12,7 +12,7 @@ The initial baseline had no passing dynamic security regression. ARTEX-011 and A
 | ARTEX-006 | P1 | PENDING VALIDATION | Secure browser sessions | Login, logout, CSRF, stream reconnect, bearer compatibility |
 | ARTEX-007 | P1 | PENDING VALIDATION | Consistent, bounded archive and restore | Concurrent mutation, malformed archive, cancellation, rollback |
 | ARTEX-008 | P1 | CONFIRMED; PARTIAL MITIGATION | Immutable, attributed operator evidence | A pre-fix regression placed evidence in task uploads. New local staging uses a private server store, bounded copy, format check, task/intent metadata and SHA-256 verified delivery. Historical evidence and deployment migration remain open. |
-| ARTEX-009 | P1 | PENDING VALIDATION | Discovery cannot grant execution scope | Scanner import, denial precedence, revocation, inheritance |
+| ARTEX-009 | P1 | CONFIRMED DESIGN LIMITATION; REMEDIATION PENDING | Discovery cannot grant execution scope | Scanner `scope_distance: 0` and agent scope rows are coverage/asset data; target gate is opt-in and its allow decision is separate from insertion rules. No default-deny campaign broker or operator grant store exists. See ADR 0004. |
 | ARTEX-010 | P2 | PENDING VALIDATION | Bounded resource use | Exhaustion, cleanup, evidence preservation |
 | ARTEX-011 | P1 | CONFIRMED; FIXED LOCALLY | Consistent password version | `TestLoginCannotSignOldPasswordAtNewVersion` failed before and passed after; focused PostgreSQL and race tests passed. See details below. |
 | ARTEX-012 | P2 | CONFIRMED; FIXED LOCALLY | Strict HS256, expiration, subject and explicit password version | `TestSessionJWTRejectsUnsupportedClaimsAndAlgorithms` failed before and passed after; `TestPasswordVersionClaim` passed. See details below. |
