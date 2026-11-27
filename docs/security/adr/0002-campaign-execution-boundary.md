@@ -26,6 +26,8 @@ This is deliberately not wired into the server or agents. It cannot run campaign
 
 The Docker adapter now attaches a separate random ownership label to each container and checks that label and the full container ID before cleaning up a failed `docker create`. A deterministic unit regression rejects removal of a different container occupying the requested name; an opt-in Docker Desktop collision test confirmed the foreign fixture survived. The opt-in `TestDockerBrokerSmoke` was cross-compiled with Go 1.26.11 and passed natively on Windows against the local image digest. It created, verified and removed one disposable Docker container; no sandbox container remained afterward.
 
+An opt-in broker-created two-campaign Docker Desktop test now passes with synthetic markers. A and B wrote concurrently as UID 10001; each retained its own `/campaign` and HOME marker and could not see the other's private marker. B could not signal A's host PID from its PID namespace. After A was removed and created again, its marker and HOME state were absent. The test used the package's internal container IDs to issue test-only `docker exec` commands; no ARTEX tool or server request used the broker. It does not cover command-output spills, explicit artifact exchange, authorized network traffic, crash recovery or adversarial host access.
+
 ## Execution handoff inventory
 
 | Path | Current entry point | Migration requirement |
