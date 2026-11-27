@@ -14,6 +14,23 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+func TestArchiveTrafficManifestBudgetTracksFileCeiling(t *testing.T) {
+	t.Setenv("ARTEX_ARCHIVE_MAX_FILE_MIB", "1")
+	t.Setenv("ARTEX_ARCHIVE_MAX_MANIFEST_MIB", "1")
+	budget, err := configuredArchiveBudget()
+	if err != nil || budget.traffic != 1<<20 {
+		t.Fatalf("default traffic budget=%d err=%v", budget.traffic, err)
+	}
+	t.Setenv("ARTEX_ARCHIVE_MAX_TRAFFIC_MIB", "2")
+	if _, err := configuredArchiveBudget(); err == nil {
+		t.Fatal("accepted traffic manifest limit above one-file archive limit")
+	}
+	t.Setenv("ARTEX_ARCHIVE_MAX_TRAFFIC_MIB", "0")
+	if _, err := configuredArchiveBudget(); err == nil {
+		t.Fatal("accepted disabled traffic manifest limit")
+	}
+}
+
 func TestArchiveBudgetRejectsCompressedInputBeforeExtraction(t *testing.T) {
 	t.Setenv("ARTEX_ARCHIVE_MAX_COMPRESSED_MIB", "1")
 	path := filepath.Join(t.TempDir(), "oversized.tar.zst")

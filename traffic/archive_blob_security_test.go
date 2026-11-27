@@ -5,10 +5,52 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestExportHostsManifestBudgetPreservesPriorSnapshot(t *testing.T) {
+	store, err := Open(t.TempDir(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const host = "bounded-archive.example"
+	if _, err := store.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "bounded-exchange", 1, host, "GET", "/", "https://"+host+"/", 200, "text/plain", 0, 2000, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO exchange_bodies(id,req_head,req_body,resp_head,resp_body)
+VALUES(?,?,?,?,?)`, "bounded-exchange", "GET / HTTP/1.1", nil, "HTTP/1.1 200 OK", bytes.Repeat([]byte("x"), 2000)); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "export")
+	if count, err := store.ExportHostsBudget(context.Background(), []string{host}, destination, 1<<20, 1<<20); err != nil || count != 1 {
+		t.Fatalf("valid export count=%d err=%v", count, err)
+	}
+	before, err := os.ReadFile(filepath.Join(destination, "traffic.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ExportHostsBudget(context.Background(), []string{host}, destination, 1<<20, 128); !errors.Is(err, errTrafficArchiveBudget) {
+		t.Fatalf("small manifest budget returned %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(destination, "traffic.json"))
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("rejected export changed prior manifest: err=%v", err)
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if bytes.HasPrefix([]byte(entry.Name()), []byte(".traffic-")) {
+			t.Fatalf("rejected export left temporary file %q", entry.Name())
+		}
+	}
+}
 
 func TestExportHostsRejectsSymlinkedBlob(t *testing.T) {
 	root := t.TempDir()

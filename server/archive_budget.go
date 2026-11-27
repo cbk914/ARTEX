@@ -16,6 +16,7 @@ type archiveBudget struct {
 	expanded   int64
 	file       int64
 	manifest   int64
+	traffic    int64
 	entries    int
 	depth      int
 }
@@ -59,14 +60,20 @@ func configuredArchiveBudget() (archiveBudget, error) {
 	if b.manifest, err = archiveMiBLimit("ARTEX_ARCHIVE_MAX_MANIFEST_MIB", 32, 128); err != nil {
 		return b, err
 	}
+	if b.traffic, err = archiveMiBLimit("ARTEX_ARCHIVE_MAX_TRAFFIC_MIB", 256, 4096); err != nil {
+		return b, err
+	}
+	if strings.TrimSpace(os.Getenv("ARTEX_ARCHIVE_MAX_TRAFFIC_MIB")) == "" && b.traffic > b.file {
+		b.traffic = b.file
+	}
 	if b.entries, err = archiveCountLimit("ARTEX_ARCHIVE_MAX_ENTRIES", 100000, 250000); err != nil {
 		return b, err
 	}
 	if b.depth, err = archiveCountLimit("ARTEX_ARCHIVE_MAX_DEPTH", 64, 128); err != nil {
 		return b, err
 	}
-	if b.file > b.expanded || b.manifest > b.file {
-		return b, errors.New("archive file and manifest limits must not exceed their parent limits")
+	if b.file > b.expanded || b.manifest > b.file || b.traffic > b.file {
+		return b, errors.New("archive file, manifest and traffic limits must not exceed their parent limits")
 	}
 	return b, nil
 }

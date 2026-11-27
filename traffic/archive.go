@@ -17,9 +17,27 @@ import (
 )
 
 const (
-	defaultArchiveBlobLimit = int64(4 << 30)
-	hardArchiveBlobLimit    = int64(32 << 30)
+	defaultArchiveBlobLimit     = int64(4 << 30)
+	hardArchiveBlobLimit        = int64(32 << 30)
+	defaultTrafficSnapshotLimit = int64(256 << 20)
+	hardTrafficSnapshotLimit    = int64(4 << 30)
 )
+
+var errTrafficArchiveBudget = errors.New("traffic archive exceeds its manifest limit")
+
+type trafficArchiveWriter struct {
+	out          io.Writer
+	written, max int64
+}
+
+func (w *trafficArchiveWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.max-w.written {
+		return 0, errTrafficArchiveBudget
+	}
+	n, err := w.out.Write(p)
+	w.written += int64(n)
+	return n, err
+}
 
 type archiveReadContext struct {
 	ctx context.Context
@@ -78,6 +96,13 @@ func (t *Traffic) ExportHosts(hosts []string, dir string) (int64, error) {
 // ExportHostsContext bounds each blob before the archive package is built.
 // A changed or symlinked blob fails export rather than copying unintended data.
 func (t *Traffic) ExportHostsContext(ctx context.Context, hosts []string, dir string, maxBlobBytes int64) (int64, error) {
+	return t.ExportHostsBudget(ctx, hosts, dir, maxBlobBytes, defaultTrafficSnapshotLimit)
+}
+
+// ExportHostsBudget streams the version-2 traffic manifest to a private
+// temporary file. The final name is published only after all rows and blobs
+// have passed their bounds and integrity checks.
+func (t *Traffic) ExportHostsBudget(ctx context.Context, hosts []string, dir string, maxBlobBytes, maxSnapshotBytes int64) (int64, error) {
 	if t == nil || len(hosts) == 0 {
 		return 0, nil
 	}
@@ -87,11 +112,24 @@ func (t *Traffic) ExportHostsContext(ctx context.Context, hosts []string, dir st
 	if maxBlobBytes <= 0 || maxBlobBytes > hardArchiveBlobLimit {
 		return 0, errors.New("invalid traffic archive blob limit")
 	}
+	if maxSnapshotBytes <= 0 || maxSnapshotBytes > hardTrafficSnapshotLimit {
+		return 0, errors.New("invalid traffic archive manifest limit")
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o700); err != nil {
 		return 0, err
 	}
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
+	temporary, err := os.CreateTemp(dir, ".traffic-*.json")
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(temporary.Name())
+	defer temporary.Close()
+	manifest := &trafficArchiveWriter{out: temporary, max: maxSnapshotBytes}
+	if _, err := manifest.Write([]byte(fmt.Sprintf(`{"version":%d,"exchanges":[`, archiveVersionV2))); err != nil {
+		return 0, err
+	}
 	unique := uniqueArchiveHosts(hosts)
 	placeholders := make([]string, len(unique))
 	args := make([]any, len(unique))
@@ -105,8 +143,8 @@ FROM exchanges WHERE host IN (`+strings.Join(placeholders, ",")+`) ORDER BY ts,i
 		return 0, err
 	}
 	defer rows.Close()
-	snapshot := ArchiveSnapshot{Version: archiveVersionV2}
 	blobs := map[string]struct{}{}
+	var count int64
 	for rows.Next() {
 		if err := ctx.Err(); err != nil {
 			return 0, err
@@ -118,6 +156,15 @@ FROM exchanges WHERE host IN (`+strings.Join(placeholders, ",")+`) ORDER BY ts,i
 			return 0, err
 		}
 		var reqBlob, respBlob sql.NullString
+		var bodyBytes int64
+		bodyErr := t.db.QueryRowContext(ctx, `SELECT COALESCE(length(CAST(req_head AS BLOB)),0)+COALESCE(length(req_body),0)+COALESCE(length(CAST(resp_head AS BLOB)),0)+COALESCE(length(resp_body),0)
+FROM exchange_bodies WHERE id=?`, item.ID).Scan(&bodyBytes)
+		if bodyErr != nil && !errors.Is(bodyErr, sql.ErrNoRows) {
+			return 0, bodyErr
+		}
+		if bodyBytes < 0 || bodyBytes > maxSnapshotBytes-manifest.written {
+			return 0, errTrafficArchiveBudget
+		}
 		err := t.db.QueryRowContext(ctx, `SELECT req_head,req_body,req_blob,resp_head,resp_body,resp_blob
 FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &reqBlob, &item.RespHead, &item.RespBody, &respBlob)
 		if errors.Is(err, sql.ErrNoRows) && strings.TrimSpace(legacyPath) != "" {
@@ -133,48 +180,94 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 		} else if err != nil {
 			return 0, err
 		}
+		actualBodyBytes := int64(len(item.ReqHead)) + int64(len(item.ReqBody)) + int64(len(item.RespHead)) + int64(len(item.RespBody))
+		if actualBodyBytes < 0 || actualBodyBytes > maxSnapshotBytes-manifest.written {
+			return 0, errTrafficArchiveBudget
+		}
 		item.ReqBlob, item.RespBlob = reqBlob.String, respBlob.String
+		rewritten, ruleIDs, err := t.RewriteInfo(item.ID)
+		if err != nil {
+			return 0, err
+		}
+		if rewritten {
+			item.Rewritten = true
+			item.RewriteRuleIDs = ruleIDs
+		}
 		for _, hash := range []string{item.ReqBlob, item.RespBlob} {
 			if hash != "" {
 				blobs[hash] = struct{}{}
 			}
 		}
-		snapshot.Exchanges = append(snapshot.Exchanges, item)
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return 0, err
+		}
+		if count > 0 {
+			if _, err := manifest.Write([]byte(",")); err != nil {
+				return 0, err
+			}
+		}
+		if _, err := manifest.Write(encoded); err != nil {
+			return 0, err
+		}
+		count++
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
 	_ = rows.Close()
-	for i := range snapshot.Exchanges {
-		rewritten, ruleIDs, err := t.RewriteInfo(snapshot.Exchanges[i].ID)
-		if err != nil {
-			return 0, err
-		}
-		if rewritten {
-			snapshot.Exchanges[i].Rewritten = true
-			snapshot.Exchanges[i].RewriteRuleIDs = ruleIDs
-		}
+	if _, err := manifest.Write([]byte(`],"blobs":`)); err != nil {
+		return 0, err
 	}
 	if len(blobs) > 0 {
-		snapshot.Blobs = make([]string, 0, len(blobs))
+		hashes := make([]string, 0, len(blobs))
 		for hash := range blobs {
-			snapshot.Blobs = append(snapshot.Blobs, hash)
+			hashes = append(hashes, hash)
 		}
-		sort.Strings(snapshot.Blobs)
-		for _, hash := range snapshot.Blobs {
+		sort.Strings(hashes)
+		if _, err := manifest.Write([]byte("[")); err != nil {
+			return 0, err
+		}
+		for i, hash := range hashes {
+			if i > 0 {
+				if _, err := manifest.Write([]byte(",")); err != nil {
+					return 0, err
+				}
+			}
+			encoded, err := json.Marshal(hash)
+			if err != nil {
+				return 0, err
+			}
+			if _, err := manifest.Write(encoded); err != nil {
+				return 0, err
+			}
 			if err := t.copyArchiveBlob(ctx, hash, filepath.Join(dir, "blobs"), maxBlobBytes); err != nil {
 				return 0, err
 			}
 		}
-	}
-	raw, err := json.Marshal(snapshot)
-	if err != nil {
+		if _, err := manifest.Write([]byte("]")); err != nil {
+			return 0, err
+		}
+	} else if _, err := manifest.Write([]byte("null")); err != nil {
 		return 0, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "traffic.json"), raw, 0o600); err != nil {
+	if _, err := manifest.Write([]byte("}")); err != nil {
 		return 0, err
 	}
-	return int64(len(snapshot.Exchanges)), nil
+	if err := errors.Join(temporary.Sync(), ctx.Err()); err != nil {
+		return 0, err
+	}
+	if err := temporary.Close(); err != nil {
+		return 0, err
+	}
+	destination := filepath.Join(dir, "traffic.json")
+	if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return 0, err
+	}
+	if err := os.Rename(temporary.Name(), destination); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func (t *Traffic) copyArchiveBlob(ctx context.Context, hash, destinationDir string, maxBytes int64) error {

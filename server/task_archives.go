@@ -218,7 +218,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		if err != nil {
 			return err
 		}
-		trafficCount, err := s.m.traffic.ExportHostsContext(s.ctx, snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"), budget.file)
+		trafficCount, err := s.m.traffic.ExportHostsBudget(s.ctx, snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"), budget.file, budget.traffic)
 		if err != nil {
 			return err
 		}

@@ -71,9 +71,14 @@ limit, and checks its content-addressed SHA-256 before publication. Historical
 two-level blob paths remain supported. Legacy request/response files are read
 under the same root with a 64 MiB limit in both export and display. A symlinked
 blob, escaping legacy SQLite path or changed content fails instead of entering
-the archive. The export still accumulates SQLite rows and marshals `traffic.json`
-in memory; it has no total snapshot budget or per-job deadline. Older legacy
-files above 64 MiB need a reviewed migration path.
+the archive. The export now streams version-2 exchanges into a private
+temporary `traffic.json` under a configurable 256 MiB default total limit,
+with a fixed 4 GiB ceiling. A rejected export leaves the prior manifest in
+place. One SQLite row is still fetched and JSON encoded in memory after a
+body-size preflight; metadata and legacy reads retain bounded allocations.
+Blob hashes remain in a deduplicated set until the manifest is finalized.
+Per-job deadlines and cross-store generation consistency remain open. Older
+legacy files above 64 MiB need a reviewed migration path.
 
 ## Required implementation
 
