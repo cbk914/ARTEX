@@ -7,7 +7,7 @@ The initial baseline had no passing dynamic security regression. ARTEX-011 and A
 | ARTEX-001 | P0 | CONFIRMED DESIGN LIMITATION; REMEDIATION PENDING | Cross-campaign process and file isolation | The opt-in Linux probe observed A read/write B's private file and signal B's process under the shared executor identity. A broker and denial acceptance tests remain open; see ADR 0002. |
 | ARTEX-002 | P0 | CONFIRMED; PARTIAL MITIGATION | Privileged filesystem confinement | Deterministic parent swaps reached outside sentinels through read, write, mkdir, delete and upload before fixes. Descriptor-confined operations pass focused tests and race checks; explicit allowed roots and atomic replacement remain open. |
 | ARTEX-003 | P0 | CONFIRMED; PARTIAL MITIGATION | Atomic confined uploads | The duplicate-name pre-fix regression failed; focused post-fix concurrency, parent-link, cancellation, quota, malformed-name, 512 MiB boundary and race tests passed. Protected staging and immutable metadata remain open. |
-| ARTEX-004 | P0 | PENDING VALIDATION | Independent default-deny network authorization | Mock authorized, denied and infrastructure destinations through each executor |
+| ARTEX-004 | P0 | CONFIRMED DESIGN LIMITATION; REMEDIATION PENDING | Independent default-deny network authorization | Opt-in Linux probe observed the custom-tool executor reach an unapproved loopback mock TCP service. Other paths and independent policy enforcement remain open; see ADR 0003. |
 | ARTEX-005 | P0 | CONFIRMED DESIGN LIMITATION; REMEDIATION PENDING | Private HOME, cache, temp and browser state | The opt-in Linux probe observed B read A's HOME marker on sequential reuse. Separate HOME/XDG/temp/browser state and denial tests remain open; see ADR 0002. |
 | ARTEX-006 | P1 | PENDING VALIDATION | Secure browser sessions | Login, logout, CSRF, stream reconnect, bearer compatibility |
 | ARTEX-007 | P1 | PENDING VALIDATION | Consistent, bounded archive and restore | Concurrent mutation, malformed archive, cancellation, rollback |
@@ -21,6 +21,8 @@ The initial baseline had no passing dynamic security regression. ARTEX-011 and A
 For each validated finding add root cause, affected files, remediation, test command and result, residual risk and commit. A skipped check remains skipped.
 
 The diagnostic `server/executor_exposure_probe_linux_test.go` runs only with `go test -tags isolation_probe ./server -run TestSharedExecutorCrossCampaignExposureProbe -count=1 -v` in a disposable root-capable Linux container. It uses synthetic task directories, files and a sleep process. The 2026-11-27 run passed its **exposure** assertions: A read and replaced B's file, B read A's HOME marker after A's process ended, and A signaled B's process. This is evidence of the vulnerability, not a passing security acceptance test. The future campaign broker must replace these assertions with denial checks and add tests for each supported executor path.
+
+The diagnostic `server/executor_network_probe_linux_test.go` runs only with `go test -tags isolation_probe ./server -run TestUnscopedExecutorCanReachLocalMockProbe -count=1 -v`. It uses `execPython` and a loopback-only TCP listener inside a disposable container with no external network. The 2026-11-27 run observed the unapproved custom-tool executor receive `PONG`. This confirms a missing independent network boundary for that route; it does not test every executor or prove any destination is authorized. See ADR 0003 for the complete enforcement and validation gates.
 
 ## ARTEX-012 validation and remediation
 
