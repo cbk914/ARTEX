@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/networkpolicy"
 )
 
 // companyScopeInputs accepts both the new [{kind,value}] contract and the
@@ -470,6 +471,42 @@ func (s *Server) deleteAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"deleted": deleted})
+}
+
+// deleteAssetsByHost is an operator-only replacement for the former agent
+// hard-delete tool. Both fields must name the same canonical host so a caller
+// explicitly confirms the exact global operation being requested.
+func (s *Server) deleteAssetsByHost(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Host        string `json:"host"`
+		ConfirmHost string `json:"confirm_host"`
+	}
+	if !strictOperatorJSON(w, r, &req) {
+		return
+	}
+	canonical, err := networkpolicy.NormalizeTarget("hostname", req.Host)
+	if err != nil {
+		canonical, err = networkpolicy.NormalizeTarget("ip", req.Host)
+	}
+	if err != nil || canonical != req.Host || req.ConfirmHost != req.Host {
+		writeErr(w, http.StatusBadRequest, "confirm the exact canonical host")
+		return
+	}
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, http.StatusServiceUnavailable, "asset library unavailable")
+		return
+	}
+	counts, err := as.DeleteByHost(req.Host)
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "host deletion failed")
+		return
+	}
+	var total int64
+	for _, n := range counts {
+		total += n
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"host": req.Host, "deleted": total, "deleted_by_type": counts})
 }
 
 // =====================================================================

@@ -37,7 +37,7 @@ func TestNetworkDecisionOperatorRoutesRemainStaged(t *testing.T) {
 		`{"effect":"allow","target_kind":"hostname","target_value":"target.test","protocol":"tcp","port_start":443,"port_end":443,"allow_direct":true,"expires_at":"` + time.Now().Add(time.Hour).Format(time.RFC3339) + `","reason":"operator-reviewed"}`,
 		`{"unknown":"field"}`,
 		`{} {}`,
-		strings.Repeat("a", networkDecisionBodyLimit+1),
+		strings.Repeat("a", operatorMutationBodyLimit+1),
 	} {
 		resp := request(http.MethodPost, base, body)
 		if resp.Code != http.StatusBadRequest && resp.Code != http.StatusRequestEntityTooLarge {

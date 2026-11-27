@@ -879,6 +879,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/assets/counts", s.assetCounts)
 	mux.HandleFunc("POST /api/assets", s.insertAssets)
 	mux.HandleFunc("DELETE /api/assets", s.deleteAssets)
+	mux.HandleFunc("DELETE /api/assets/by-host", s.deleteAssetsByHost)
 
 	// company system
 	mux.HandleFunc("GET /api/companies", s.listCompanies)

@@ -6,6 +6,7 @@ Version: 2026-11-27. Assets: signing and encryption keys, operator sessions, Pos
 
 1. Browser script or cross-origin request misuses a session through browser storage, URL transport or incomplete CSRF controls.
 2. Untrusted tool output instructs a model to expand scope, read secrets or approve persistence. Only server-side authorization may decide those actions.
+   One confirmed instance was `delete_assets_by_host`: an Auto agent tool could hard-delete root and child assets from the global library while carrying only task attribution. The local guard makes that legacy tool deny every call and moves the same operation to an authenticated operator API with an exact host confirmation. Skill, custom-tool, MCP and other platform mutations still require a separate authorization review; this change does not establish a general model-to-control-plane boundary.
 3. A worker sharing identity, home, writable filesystem or namespace with another campaign reads or alters that campaign's state.
 4. A privileged server validates a path, then follows a changed parent or link during a later operation.
 5. A child process reaches PostgreSQL, management services or an unauthorized target without passing the application-level target parser.

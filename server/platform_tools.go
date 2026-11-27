@@ -35,7 +35,6 @@ var platformToolKeys = []string{
 	"create_skill", "update_skill_file",
 	"create_custom_tool", "update_custom_tool",
 	"create_mcp", "update_mcp",
-	"delete_assets_by_host",
 }
 
 // ---- assets ----
@@ -44,38 +43,12 @@ var platformToolKeys = []string{
 // Platform-level (not a per-task tool): operates on the global, cross-task asset library.
 func (s *Server) toolDeleteAssetsByHost() actool.CoreTool {
 	return wrTool("delete_assets_by_host",
-		"Delete assets by exact host: removes the host's domains/subdomains plus the services (service) and endpoints (endpoint) under them.\n"+
-			"host must match exactly (lowercased, whitespace-trimmed); no fuzzy or wildcard matching.\n"+
-			"Passing a root domain (e.g. example.com) also deletes its subdomains and their services/endpoints; passing a subdomain (e.g. a.example.com) or an IP deletes only that host itself and its services/endpoints.\n"+
-			"⚠️ Hard delete, applies to the global asset library (shared across tasks), irreversible.",
+		"Global asset deletion requires an authenticated operator request to DELETE /api/assets/by-host. Ask the operator to review the exact host; this agent tool cannot perform the deletion.",
 		objSchema(map[string]any{
 			"host": strParam("The host to delete: domain/subdomain/IP. Exact match, e.g. example.com, a.example.com, or 1.2.3.4"),
 		}, "host"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
-			as := s.assetStore()
-			if as == nil {
-				return actool.Errorf("asset library not initialized"), nil
-			}
-			var a struct {
-				Host string `json:"host"`
-			}
-			_ = json.Unmarshal(in, &a)
-			if strings.TrimSpace(a.Host) == "" {
-				return actool.Errorf("host must not be empty"), nil
-			}
-			counts, err := as.DeleteByHost(a.Host)
-			if err != nil {
-				return actool.Errorf("delete failed: " + err.Error()), nil
-			}
-			var total int64
-			for _, n := range counts {
-				total += n
-			}
-			return jsonResult(map[string]any{
-				"host":            a.Host,
-				"deleted":         total,
-				"deleted_by_type": counts,
-			})
+		func(_ context.Context, _ json.RawMessage) (actool.Result, error) {
+			return actool.Errorf("global asset deletion requires an authenticated operator request"), nil
 		})
 }
 

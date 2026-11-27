@@ -2,41 +2,13 @@ package server
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
 )
-
-const networkDecisionBodyLimit = 4096
-
-func networkDecisionJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if r.Header.Get("Content-Type") != "application/json" {
-		writeErr(w, http.StatusUnsupportedMediaType, "application/json required")
-		return false
-	}
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, networkDecisionBodyLimit))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(dst); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "network decision body too large")
-		} else {
-			writeErr(w, http.StatusBadRequest, "invalid network decision JSON")
-		}
-		return false
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		writeErr(w, http.StatusBadRequest, "network decision must contain one JSON object")
-		return false
-	}
-	return true
-}
 
 func (s *Server) networkDecisionTask(w http.ResponseWriter, r *http.Request) (int64, string, bool) {
 	id, ok := pathInt(r, "id")
@@ -110,7 +82,7 @@ func (s *Server) addTaskNetworkDecision(w http.ResponseWriter, r *http.Request) 
 		ExpiresAt   time.Time `json:"expires_at"`
 		Reason      string    `json:"reason"`
 	}
-	if !networkDecisionJSON(w, r, &body) {
+	if !strictOperatorJSON(w, r, &body) {
 		return
 	}
 	pg := s.pg(w)
@@ -157,7 +129,7 @@ func (s *Server) revokeTaskNetworkDecision(w http.ResponseWriter, r *http.Reques
 	var body struct {
 		Reason string `json:"reason"`
 	}
-	if !networkDecisionJSON(w, r, &body) {
+	if !strictOperatorJSON(w, r, &body) {
 		return
 	}
 	pg := s.pg(w)
