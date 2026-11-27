@@ -30,10 +30,11 @@ type taskSandboxStore interface {
 }
 
 type taskSandboxEntry struct {
-	mu     sync.Mutex
-	handle string
-	expID  int64
-	closed bool
+	mu            sync.Mutex
+	handle        string
+	expID         int64
+	closed        bool
+	retirePending bool
 }
 
 // taskSandboxController binds a live task and its exploration to one broker
@@ -111,6 +112,11 @@ func (c *taskSandboxController) operate(ctx context.Context, info agent.RunInfo,
 	if entry.closed {
 		return "", errors.New("task sandbox was removed")
 	}
+	if entry.retirePending {
+		if err := c.retireCreated(entry); err != nil {
+			return "", err
+		}
+	}
 	if entry.expID != 0 && entry.expID != info.ExplorationID {
 		return "", errors.New("task sandbox exploration changed")
 	}
@@ -122,6 +128,7 @@ func (c *taskSandboxController) operate(ctx context.Context, info agent.RunInfo,
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	created := false
 	if entry.handle == "" {
 		entry.expID = info.ExplorationID
 		handle, err := c.broker.Create(ctx, info.TaskID)
@@ -132,14 +139,40 @@ func (c *taskSandboxController) operate(ctx context.Context, info agent.RunInfo,
 			return "", errors.New("broker returned empty sandbox handle")
 		}
 		entry.handle = handle
+		created = true
 	}
 	if _, err := c.authorizedTask(info); err != nil {
+		if created {
+			return "", errors.Join(err, c.retireCreated(entry))
+		}
 		return "", err
 	}
 	if err := ctx.Err(); err != nil {
+		if created {
+			return "", errors.Join(err, c.retireCreated(entry))
+		}
 		return "", err
 	}
 	return fn(entry.handle)
+}
+
+// retireCreated removes a sandbox that was created but never admitted to run.
+// Cleanup uses its own deadline because the caller's context may already be
+// cancelled. A failed removal blocks reuse until it can be retried.
+func (c *taskSandboxController) retireCreated(entry *taskSandboxEntry) error {
+	if entry.handle == "" {
+		entry.retirePending = false
+		return nil
+	}
+	entry.retirePending = true
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.broker.Remove(ctx, entry.handle); err != nil {
+		return fmt.Errorf("retire unadmitted task sandbox: %w", err)
+	}
+	entry.handle = ""
+	entry.retirePending = false
+	return nil
 }
 
 func (c *taskSandboxController) Run(ctx context.Context, info agent.RunInfo, command string) (string, error) {

@@ -84,7 +84,10 @@ func (b *sandboxBackendRecorder) PutArtifact(_ context.Context, handle, name str
 	return "digest", nil
 }
 
-func (b *sandboxBackendRecorder) Remove(_ context.Context, handle string) error {
+func (b *sandboxBackendRecorder) Remove(ctx context.Context, handle string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.removeFail {
@@ -237,5 +240,59 @@ func TestTaskSandboxRechecksLifecycleAfterCreation(t *testing.T) {
 	defer backend.mu.Unlock()
 	if len(backend.ran) != 0 {
 		t.Fatalf("paused task reached broker execution: %v", backend.ran)
+	}
+	if len(backend.removed) != 1 || backend.removed[0] != "handle-7" {
+		t.Fatalf("unadmitted sandbox was retained: %v", backend.removed)
+	}
+}
+
+func TestTaskSandboxRetriesFailedRetirementBeforeReuse(t *testing.T) {
+	c, store, backend, _ := newSandboxTestController(t)
+	info := agent.RunInfo{TaskID: 7, ExplorationID: 70}
+	backend.removeFail = true
+	backend.onCreate = func() {
+		store.mu.Lock()
+		store.rows[7].Paused = true
+		store.mu.Unlock()
+	}
+	if _, err := c.Run(context.Background(), info, "first"); err == nil {
+		t.Fatal("ran a command after task paused during creation")
+	}
+	store.mu.Lock()
+	store.rows[7].Paused = false
+	store.mu.Unlock()
+	if _, err := c.Run(context.Background(), info, "second"); err == nil {
+		t.Fatal("reused a sandbox whose retirement failed")
+	}
+	backend.mu.Lock()
+	if backend.created[7] != 1 || len(backend.ran) != 0 {
+		backend.mu.Unlock()
+		t.Fatal("failed retirement allowed another create or execution")
+	}
+	backend.removeFail = false
+	backend.onCreate = nil
+	backend.mu.Unlock()
+	if _, err := c.Run(context.Background(), info, "third"); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.created[7] != 2 || len(backend.removed) != 1 || len(backend.ran) != 1 || backend.ran[0] != "handle-7:third" {
+		t.Fatalf("retirement retry did not create a fresh sandbox: creates=%v removed=%v runs=%v", backend.created, backend.removed, backend.ran)
+	}
+}
+
+func TestTaskSandboxRetiresAfterCreateContextCancellation(t *testing.T) {
+	c, _, backend, _ := newSandboxTestController(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	backend.onCreate = cancel
+	_, err := c.Run(ctx, agent.RunInfo{TaskID: 7, ExplorationID: 70}, "never")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled creation: %v", err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.ran) != 0 || len(backend.removed) != 1 || backend.removed[0] != "handle-7" {
+		t.Fatalf("cancelled creation left a sandbox: runs=%v removed=%v", backend.ran, backend.removed)
 	}
 }
