@@ -37,6 +37,15 @@ the path-based reopen in the package writer. It does not prevent an authorized
 writer from changing bytes in place and restoring the same metadata, prove a
 database/file generation match, or enforce a mount boundary inside the root.
 
+The extractor now opens its destination as an `os.Root` and creates tar
+directories and files relative to that descriptor. A synthetic pre-fix test
+placed a link from the restore directory to an outside directory and showed
+that a regular tar entry followed it; the test passes after the change and
+the outside directory remains untouched. Package round trips, traversal and
+overflow checks passed, along with focused race tests, vet, Windows cross
+compilation and native Windows round-trip/symlink tests. The caller still creates the outer restore directory by path;
+this change does not prove a mount boundary or transaction-wide consistency.
+
 These observations confirm ARTEX-007 as a partial transaction and resource
 isolation gap. The code review does not prove that a live task can mutate the
 private staging directory after drain, or that an archive currently contains

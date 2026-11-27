@@ -307,3 +307,46 @@ func TestTaskArchivePackageRejectsTraversal(t *testing.T) {
 		t.Fatalf("traversal wrote outside destination: %v", err)
 	}
 }
+
+func TestTaskArchiveExtractCannotFollowDestinationSymlink(t *testing.T) {
+	var compressed bytes.Buffer
+	encoder, err := zstd.NewWriter(&compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(encoder)
+	content := []byte("synthetic archive content")
+	if err := tw.WriteHeader(&tar.Header{Name: "linked/new.txt", Mode: 0o600, Size: int64(len(content))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	path := filepath.Join(base, "fixture.tar.zst")
+	if err := os.WriteFile(path, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(base, "restore")
+	outside := filepath.Join(base, "outside")
+	for _, dir := range []string{destination, outside} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(destination, "linked")); err != nil {
+		t.Skipf("symlink fixture unavailable: %v", err)
+	}
+	if err := extractTaskArchivePackage(path, "", destination); err == nil {
+		t.Fatal("archive followed a destination symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("archive wrote outside restore root: %v", err)
+	}
+}

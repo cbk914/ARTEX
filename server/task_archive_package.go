@@ -803,6 +803,11 @@ func extractTaskArchivePackageContext(ctx context.Context, path, expectedSHA, de
 	if err := os.MkdirAll(destination, archiveDirMode); err != nil {
 		return err
 	}
+	destinationRoot, err := os.OpenRoot(destination)
+	if err != nil {
+		return err
+	}
+	defer destinationRoot.Close()
 	var entries int
 	var total int64
 	for {
@@ -831,14 +836,14 @@ func extractTaskArchivePackageContext(ctx context.Context, path, expectedSHA, de
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, archiveDirMode); err != nil {
+			if err := destinationRoot.MkdirAll(clean, archiveDirMode); err != nil {
 				return err
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), archiveDirMode); err != nil {
+			if err := destinationRoot.MkdirAll(filepath.Dir(clean), archiveDirMode); err != nil {
 				return err
 			}
-			output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fs.FileMode(header.Mode)&0o777)
+			output, err := destinationRoot.OpenFile(clean, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fs.FileMode(header.Mode)&0o777)
 			if err != nil {
 				return err
 			}
