@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -720,17 +719,10 @@ func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			// The archive format supports only regular files and directories end to end (the
-			// unpacker errors out on other types), so symlinks cannot be restored. Skip rather
-			// than fail the whole package: the link target is not read (lstat, never leaves the tree) and no symlink entry is written; when a link points inside the tree, the target file itself is still walked and archived separately.
-			log.Printf("[task-archive] skipping symlink (unsupported by the archive, other files unaffected): %s", relative)
-			return nil
+			return fmt.Errorf("task archive contains unsupported symlink: %s", relative)
 		}
 		if !entry.IsDir() && !info.Mode().IsRegular() {
-			// A named pipe, socket or device left by a command: opening a pipe blocks until
-			// a writer appears, tar refuses a socket, and the unpacker refuses the rest.
-			log.Printf("[task-archive] skipping a file that is not regular (unsupported by the archive): %s", relative)
-			return nil
+			return fmt.Errorf("task archive contains unsupported special file: %s", relative)
 		}
 		entries++
 		if entries > budget.entries || archivePathDepth(relative) > budget.depth ||
