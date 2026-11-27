@@ -28,6 +28,15 @@ is verified by reading the entire compressed file before extraction, but that
 does not itself bound decompressed output or prove that mutable source bytes
 matched the PostgreSQL snapshot.
 
+The package writer now walks the private staging tree through `os.Root.FS()`
+and opens regular files relative to that root. It compares the selected entry
+with the opened descriptor and rejects changes to the file size or modification
+time during a copy. Deterministic tests cover a replaced file, a parent changed
+to a link outside the stage, and a changed path to the staging root. This closes
+the path-based reopen in the package writer. It does not prevent an authorized
+writer from changing bytes in place and restoring the same metadata, prove a
+database/file generation match, or enforce a mount boundary inside the root.
+
 These observations confirm ARTEX-007 as a partial transaction and resource
 isolation gap. The code review does not prove that a live task can mutate the
 private staging directory after drain, or that an archive currently contains
@@ -44,11 +53,10 @@ inconsistent records. Those require targeted race and integration tests.
    writers. Check cancellation between entries and during large copies. Keep
    overflow-safe arithmetic before allocating or writing each entry. Test the
    zstd decoder memory ceiling independently of tar header limits.
-3. Open staged source files through a private directory handle; reject a
-   replaced path, symlink, or nonregular descriptor. Verify the descriptor's
-   metadata against the entry chosen for the archive and record a per-file
-   checksum. Keep the stage inaccessible to executors. Define what happens if
-   an authorized external writer changes a file in place during packaging.
+3. Keep descriptor-bound source opens and rejection of replaced paths, links
+   and nonregular descriptors. Record a per-file checksum and define what
+   happens if an authorized external writer changes a file in place during
+   packaging. Keep the stage inaccessible to executors.
 4. Couple the file and database snapshot to a stable generation or a durable
    mutation barrier. The archive should contain enough provenance to detect
    a mismatch before deleting the hot task. Preserve the existing journal

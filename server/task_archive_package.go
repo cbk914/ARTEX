@@ -584,6 +584,29 @@ type archiveContextReader struct {
 	r   io.Reader
 }
 
+// openArchiveSource binds the bytes read to the regular entry selected by the
+// rooted walk. A changed parent or file must not redirect packaging to another
+// inode, and a substituted link or special file must not be opened as content.
+func openArchiveSource(root *os.Root, name string, selected fs.FileInfo) (*os.File, error) {
+	entry, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !entry.Mode().IsRegular() || !os.SameFile(selected, entry) {
+		return nil, fmt.Errorf("archive source changed before open: %s", name)
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(selected, opened) || opened.Size() != selected.Size() {
+		file.Close()
+		return nil, fmt.Errorf("archive source changed at open: %s", name)
+	}
+	return file, nil
+}
+
 func (r archiveContextReader) Read(p []byte) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
@@ -644,16 +667,22 @@ func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string
 		return 0, 0, "", err
 	}
 	tarWriter := tar.NewWriter(encoder)
-	walkErr := filepath.WalkDir(payloadDir, func(current string, entry fs.DirEntry, walkErr error) error {
+	payloadRoot, err := os.OpenRoot(payloadDir)
+	if err != nil {
+		_ = tarWriter.Close()
+		_ = encoder.Close()
+		return 0, 0, "", err
+	}
+	defer payloadRoot.Close()
+	walkErr := fs.WalkDir(payloadRoot.FS(), ".", func(relative string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if walkErr != nil {
 			return walkErr
 		}
-		relative, err := filepath.Rel(payloadDir, current)
-		if err != nil || relative == "." {
-			return err
+		if relative == "." {
+			return nil
 		}
 		info, err := entry.Info()
 		if err != nil {
@@ -663,20 +692,20 @@ func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string
 			// The archive format supports only regular files and directories end to end (the
 			// unpacker errors out on other types), so symlinks cannot be restored. Skip rather
 			// than fail the whole package: the link target is not read (lstat, never leaves the tree) and no symlink entry is written; when a link points inside the tree, the target file itself is still walked and archived separately.
-			log.Printf("[task-archive] skipping symlink (unsupported by the archive, other files unaffected): %s", current)
+			log.Printf("[task-archive] skipping symlink (unsupported by the archive, other files unaffected): %s", relative)
 			return nil
 		}
 		if !entry.IsDir() && !info.Mode().IsRegular() {
 			// A named pipe, socket or device left by a command: opening a pipe blocks until
 			// a writer appears, tar refuses a socket, and the unpacker refuses the rest.
-			log.Printf("[task-archive] skipping a file that is not regular (unsupported by the archive): %s", current)
+			log.Printf("[task-archive] skipping a file that is not regular (unsupported by the archive): %s", relative)
 			return nil
 		}
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
 			return err
 		}
-		header.Name = filepath.ToSlash(relative)
+		header.Name = relative
 		if err := tarWriter.WriteHeader(header); err != nil {
 			return err
 		}
@@ -684,13 +713,17 @@ func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string
 			return nil
 		}
 		originalSize += info.Size()
-		input, err := os.Open(current)
+		input, err := openArchiveSource(payloadRoot, relative, info)
 		if err != nil {
 			return err
 		}
 		_, copyErr := io.CopyN(tarWriter, archiveContextReader{ctx: ctx, r: input}, info.Size())
+		final, statErr := input.Stat()
 		closeErr := input.Close()
-		return errors.Join(copyErr, closeErr, ctx.Err())
+		if statErr == nil && (final.Size() != info.Size() || !final.ModTime().Equal(info.ModTime())) {
+			statErr = fmt.Errorf("archive source changed during read: %s", relative)
+		}
+		return errors.Join(copyErr, statErr, closeErr, ctx.Err())
 	})
 	if walkErr != nil {
 		_ = tarWriter.Close()
