@@ -77,6 +77,12 @@ func printBanner(addr string) {
 // main maps run's result onto the process exit code. The body lives in a
 // function that can *return* rather than os.Exit, so its own defers still run.
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "__artex-sandbox-filetool" {
+		if err := agent.RunSandboxFileTool(context.Background(), os.Stdin, os.Stdout); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	// Started as the Bash shim or as an MCP drop command: drop the identity and exec
 	// the real program. It returns only for an ordinary start.
 	server.RunExecShimIfRequested(os.Args)

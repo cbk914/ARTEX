@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -42,6 +43,19 @@ type sandboxBackendRecorder struct {
 	removed     []string
 	removeFail  bool
 	onCreate    func()
+}
+
+type sandboxFileBackend struct{ *sandboxBackendRecorder }
+
+func (b *sandboxFileBackend) RunInput(_ context.Context, handle, command string, input []byte) (string, error) {
+	if command != agent.SandboxFileToolCommand || handle != "handle-7" {
+		return "", errors.New("unexpected sandbox file command")
+	}
+	var req agent.SandboxFileToolRequest
+	if err := json.Unmarshal(input, &req); err != nil || req.Name != "Read" {
+		return "", errors.New("invalid sandbox file request")
+	}
+	return `{"text":"private file result","is_error":false}`, nil
 }
 
 func (b *sandboxBackendRecorder) Create(_ context.Context, id int64) (string, error) {
@@ -386,5 +400,27 @@ func TestTaskSandboxDelayedTerminalCleanupCannotRetireRevivedRun(t *testing.T) {
 	defer backend.mu.Unlock()
 	if backend.created[7] != 2 || len(backend.removed) != 1 || backend.removed[0] != "handle-7" || len(backend.ran) != 2 {
 		t.Fatalf("late terminal cleanup removed a live run: created=%v removed=%v ran=%v", backend.created, backend.removed, backend.ran)
+	}
+}
+
+func TestTaskSandboxFileToolBindsVerifiedTask(t *testing.T) {
+	c, store, backend, _ := newSandboxTestController(t)
+	c.broker = &sandboxFileBackend{backend}
+	req := agent.SandboxFileToolRequest{Name: "Read", Input: json.RawMessage(`{"file_path":"report.txt"}`), WorkingDir: "/app/data/tasks/7/main", MaxOutputChars: 30000}
+	info := agent.RunInfo{TaskID: 7, ExplorationID: 70}
+	result, err := c.RunFileTool(context.Background(), info, req)
+	if err != nil || result.IsError || result.Flatten() != "private file result" {
+		t.Fatalf("sandbox file result: %+v, %v", result, err)
+	}
+	store.mu.Lock()
+	store.rows[7].Status = "done"
+	store.mu.Unlock()
+	if _, err := c.RunFileTool(context.Background(), info, req); err == nil {
+		t.Fatal("terminal task reached sandbox file command")
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.created[7] != 1 {
+		t.Fatalf("unexpected sandbox creation: %v", backend.created)
 	}
 }

@@ -53,7 +53,12 @@ func defaultToolsWithTaskShell(base string, runner TaskShellRunner) []actool.Cor
 	out := make([]actool.CoreTool, 0, len(all))
 	for _, t := range all {
 		if run, ok := confinedFileToolNames[t.Name()]; ok {
-			t = &confinedFileTool{CoreTool: t, base: base, run: run}
+			if runner == nil {
+				t = &confinedFileTool{CoreTool: t, base: base, run: run}
+			} else {
+				fileRunner, _ := runner.(TaskFileRunner)
+				t = &sandboxFileTool{CoreTool: t, runner: fileRunner}
+			}
 		} else if t.Name() == "Bash" && runner != nil {
 			t = &sandboxBashTool{CoreTool: t, runner: runner}
 		}
@@ -108,6 +113,9 @@ func (t *confinedFileTool) Call(_ context.Context, in json.RawMessage, tc *actoo
 type workRoot struct {
 	*os.Root
 	dir string
+	// sandboxAlias is an additional absolute spelling of this same root used
+	// only by the brokered file-tool helper. It cannot expand the opened root.
+	sandboxAlias string
 	// captured is set by capture: the result text still has to go through
 	// actool.Capture once the call has left the file tool identity.
 	captured bool
@@ -184,6 +192,11 @@ func (w *workRoot) rel(p string) (string, error) {
 		return ".", nil
 	}
 	if filepath.IsAbs(p) {
+		if w.sandboxAlias != "" {
+			if aliasRel, aliasErr := filepath.Rel(w.sandboxAlias, filepath.Clean(p)); aliasErr == nil && filepath.IsLocal(aliasRel) {
+				return aliasRel, nil
+			}
+		}
 		r, err := filepath.Rel(w.dir, filepath.Clean(p))
 		if err != nil {
 			return "", errOutsideWorkDir

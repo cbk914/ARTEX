@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/sandboxbroker"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // taskSandboxBackend is the trusted control-plane client, never an agent tool.
@@ -24,6 +26,7 @@ type taskSandboxBackend interface {
 }
 
 var _ taskSandboxBackend = (*sandboxbroker.Client)(nil)
+var _ agent.TaskFileRunner = (*taskSandboxController)(nil)
 
 type taskSandboxStore interface {
 	GetTask(int64) (*db.Task, error)
@@ -259,6 +262,31 @@ func (c *taskSandboxController) RunInput(ctx context.Context, info agent.RunInfo
 
 func (c *taskSandboxController) PutArtifact(ctx context.Context, info agent.RunInfo, name string, data []byte) (string, error) {
 	return c.operate(ctx, info, func(handle string) (string, error) { return c.broker.PutArtifact(ctx, handle, name, data) })
+}
+
+func (c *taskSandboxController) RunFileTool(ctx context.Context, info agent.RunInfo, req agent.SandboxFileToolRequest) (actool.Result, error) {
+	if req.Name == "" || len(req.Input) == 0 || req.WorkingDir == "" || req.MaxOutputChars < 1 {
+		return actool.Result{}, errors.New("invalid task sandbox file request")
+	}
+	if req.MaxOutputChars > 512<<10 {
+		req.MaxOutputChars = 512 << 10
+	}
+	body, err := json.Marshal(req)
+	if err != nil || len(body) > 1<<20 {
+		return actool.Result{}, errors.New("task sandbox file request exceeds stdin limit")
+	}
+	output, err := c.RunInput(ctx, info, agent.SandboxFileToolCommand, body)
+	if err != nil {
+		return actool.Result{}, err
+	}
+	var result agent.SandboxFileToolResponse
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return actool.Result{}, errors.New("invalid task sandbox file response")
+	}
+	if result.IsError {
+		return actool.Errorf(result.Text), nil
+	}
+	return actool.Text(result.Text), nil
 }
 
 // RemoveTask is called after the task deletion barrier has drained operations.

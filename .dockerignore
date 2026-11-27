@@ -1,4 +1,5 @@
 .git
+.codex-go12611
 **/node_modules
 web/.next
 web/out

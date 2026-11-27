@@ -1,6 +1,7 @@
 param(
     [string]$BrokerImage = 'artex-galactus:broker-validation-20261127',
-    [string]$SandboxImage = 'artex:local'
+    [string]$SandboxImage = 'artex:local',
+    [switch]$FileToolSmoke
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +87,23 @@ try {
     if ($stdinRun.output -ne 'SYNTHETIC_STDIN') { throw 'sandbox stdin transfer returned unexpected output' }
     $second = Invoke-Broker 'POST' '/v1/sandboxes' '{"campaign_id":72}' | ConvertFrom-Json
     if ($second.handle.Length -ne 64 -or $second.handle -eq $first.handle) { throw 'second campaign handle invalid' }
+    if ($FileToolSmoke) {
+        $workingDir = '/app/data/tasks/71/main'
+        $fileRequest = @{ name = 'Write'; input = @{ file_path = "$workingDir/private.txt"; content = 'A_PRIVATE' }; working_dir = $workingDir; max_output_chars = 30000 } | ConvertTo-Json -Depth 5 -Compress
+        $fileBody = @{ command = '/app/artex __artex-sandbox-filetool'; input = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($fileRequest)) } | ConvertTo-Json -Compress
+        $fileWrite = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run-input" $fileBody | ConvertFrom-Json
+        $fileResult = $fileWrite.output | ConvertFrom-Json
+        if ($fileResult.is_error -or $fileResult.text -notmatch '^Created ') { throw 'sandbox file-tool write failed' }
+        $listRequest = @{ name = 'LS'; input = @{ path = $workingDir }; working_dir = $workingDir; max_output_chars = 10 } | ConvertTo-Json -Depth 5 -Compress
+        $listBody = @{ command = '/app/artex __artex-sandbox-filetool'; input = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($listRequest)) } | ConvertTo-Json -Compress
+        $fileList = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run-input" $listBody | ConvertFrom-Json
+        $listResult = $fileList.output | ConvertFrom-Json
+        if ($listResult.is_error -or $listResult.text -notmatch '<persisted-output>') { throw 'sandbox file-tool output did not spill privately' }
+        $private = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" '{"command":"test \"$(cat /campaign/private.txt)\" = A_PRIVATE && printf private"}' | ConvertFrom-Json
+        if ($private.output -ne 'private') { throw 'sandbox file-tool write was not visible to Bash' }
+        $isolated = Invoke-Broker 'POST' "/v1/sandboxes/$($second.handle)/run" '{"command":"test ! -e /campaign/private.txt && test ! -e /campaign/.artex-output && printf isolated"}' | ConvertFrom-Json
+        if ($isolated.output -ne 'isolated') { throw 'other campaign saw the private file' }
+    }
     $artifact = Invoke-Broker 'PUT' "/v1/sandboxes/$($first.handle)/artifacts/fixture.txt" 'ARTIFACT_A' 'application/octet-stream' | ConvertFrom-Json
     if ($artifact.sha256 -ne '227bd725c586586d62c3c78f8bb304342328410324107a8580432f3345b29301') { throw 'broker returned unexpected artifact digest' }
     $read = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" '{"command":"cat /artifacts/fixture.txt && test ! -w /artifacts/fixture.txt"}' | ConvertFrom-Json
@@ -111,6 +129,12 @@ try {
 
     Invoke-Broker 'DELETE' "/v1/sandboxes/$($first.handle)" | Out-Null
     if (@(NewSandboxIDs $baseline).Count -ne 1) { throw 'explicit removal left an unexpected sandbox count' }
+    if ($FileToolSmoke) {
+        $reused = Invoke-Broker 'POST' '/v1/sandboxes' '{"campaign_id":71}' | ConvertFrom-Json
+        $empty = Invoke-Broker 'POST' "/v1/sandboxes/$($reused.handle)/run" '{"command":"test ! -e /campaign/private.txt && printf clean"}' | ConvertFrom-Json
+        if ($empty.output -ne 'clean') { throw 'recreated campaign retained old private file' }
+        Invoke-Broker 'DELETE' "/v1/sandboxes/$($reused.handle)" | Out-Null
+    }
     docker stop --time=80 $brokerName | Out-Null
     Assert-Exit 'graceful broker stop'
     if (@(NewSandboxIDs $baseline).Count -ne 0) { throw 'broker shutdown left an owned sandbox' }
