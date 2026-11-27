@@ -9,10 +9,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/klauspost/compress/zstd"
 )
+
+func TestArchiveJobTimeoutConfiguration(t *testing.T) {
+	t.Setenv("ARTEX_ARCHIVE_JOB_TIMEOUT_MINUTES", "")
+	if got, err := configuredArchiveJobTimeout(); err != nil || got != 240*time.Minute {
+		t.Fatalf("default job timeout=%v err=%v", got, err)
+	}
+	t.Setenv("ARTEX_ARCHIVE_JOB_TIMEOUT_MINUTES", "1")
+	if got, err := configuredArchiveJobTimeout(); err != nil || got != time.Minute {
+		t.Fatalf("configured job timeout=%v err=%v", got, err)
+	}
+	for _, invalid := range []string{"0", "1441", "bad"} {
+		t.Setenv("ARTEX_ARCHIVE_JOB_TIMEOUT_MINUTES", invalid)
+		if _, err := configuredArchiveJobTimeout(); err == nil {
+			t.Fatalf("accepted job timeout %q", invalid)
+		}
+	}
+}
 
 func TestArchiveTrafficManifestBudgetTracksFileCeiling(t *testing.T) {
 	t.Setenv("ARTEX_ARCHIVE_MAX_FILE_MIB", "1")

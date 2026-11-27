@@ -77,7 +77,17 @@ with a fixed 4 GiB ceiling. A rejected export leaves the prior manifest in
 place. One SQLite row is still fetched and JSON encoded in memory after a
 body-size preflight; metadata and legacy reads retain bounded allocations.
 Blob hashes remain in a deduplicated set until the manifest is finalized.
-Per-job deadlines and cross-store generation consistency remain open. Older
+Claimed jobs now use a configurable 240-minute default deadline with a hard
+1440-minute ceiling. The job context reaches package copy/extraction, traffic
+export/import, remote storage operations and PostgreSQL snapshot, compaction,
+restore and metadata deletion transactions. Extracted traffic manifests and
+blobs have rooted, bounded reads; imported blobs are hashed before installation
+and existing destinations must match their hashes. Cancellation is still
+cooperative: filesystem renames, JSON decoding and some metadata operations can
+run beyond the exact instant of the deadline. The traffic destination bucket is
+still created by path and requires an external write boundary before it can be
+trusted against a local actor able to replace directories. Cross-store generation consistency
+remains open. Older
 legacy files above 64 MiB need a reviewed migration path.
 
 ## Required implementation

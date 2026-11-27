@@ -612,6 +612,13 @@ manifest limits must not exceed the file limit. An older package that exceeds
 the defaults remains stored; review its size and raise the relevant setting
 within the fixed ceiling before retrying restoration. Packages above a fixed
 ceiling need a separate reviewed migration; they are not deleted automatically.
+Each claimed archive, restore or delete job has a 240-minute deadline by default.
+`ARTEX_ARCHIVE_JOB_TIMEOUT_MINUTES` accepts 1-1440 minutes; an invalid value
+fails the job. The deadline covers cancellable package, traffic, remote-storage
+and database transaction stages. It does not interrupt every filesystem move
+or JSON decode immediately. Restored traffic blobs are read beneath the
+extracted archive root with the configured per-file limit and SHA-256 checks;
+existing blob files are verified before reuse.
 
 **Common flags**: `./start.sh -addr :8787 -proxy :8788` (`-addr` frontend/API, `-proxy` traffic
 recording proxy).

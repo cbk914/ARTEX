@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const mib = int64(1 << 20)
@@ -83,6 +84,14 @@ func archivePathDepth(path string) int {
 }
 
 var errArchiveBudget = errors.New("task archive exceeds configured resource limits")
+
+func configuredArchiveJobTimeout() (time.Duration, error) {
+	minutes, err := archiveCountLimit("ARTEX_ARCHIVE_JOB_TIMEOUT_MINUTES", 240, 1440)
+	if err != nil {
+		return 0, err
+	}
+	return time.Duration(minutes) * time.Minute, nil
+}
 
 // archiveLimitWriter rejects a write before any part of it crosses the ceiling.
 type archiveLimitWriter struct {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,11 +38,18 @@ func removeLocalArchivePackage(filename string) error {
 }
 
 func (s *Server) removeStoredArchive(uri string) error {
+	return s.removeStoredArchiveContext(s.ctx, uri)
+}
+
+func (s *Server) removeStoredArchiveContext(ctx context.Context, uri string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.validateStoredArchive(uri); err != nil {
 		return err
 	}
 	if strings.HasPrefix(uri, "s3://") {
-		return s.archiveStore.Delete(s.ctx, uri)
+		return s.archiveStore.Delete(ctx, uri)
 	}
 	return removeLocalArchivePackage(uri)
 }
@@ -97,6 +105,13 @@ func (s *Server) recoverRemoteArchiveJournals() error {
 }
 
 func (s *Server) recoverRemoteArchiveJournal(name string) error {
+	return s.recoverRemoteArchiveJournalContext(s.ctx, name)
+}
+
+func (s *Server) recoverRemoteArchiveJournalContext(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	raw, err := os.ReadFile(name)
 	if err != nil {
 		return err
@@ -118,7 +133,7 @@ func (s *Server) recoverRemoteArchiveJournal(name string) error {
 	switch j.Operation {
 	case "upload":
 		if item == nil || item.ArchivePath != j.URI {
-			if err := s.archiveStore.Delete(s.ctx, j.URI); err != nil {
+			if err := s.archiveStore.Delete(ctx, j.URI); err != nil {
 				return err
 			}
 		}
@@ -135,7 +150,7 @@ func (s *Server) recoverRemoteArchiveJournal(name string) error {
 		}
 	case "delete":
 		if item == nil {
-			if err := s.archiveStore.Delete(s.ctx, j.URI); err != nil {
+			if err := s.archiveStore.Delete(ctx, j.URI); err != nil {
 				return err
 			}
 		}
@@ -146,16 +161,23 @@ func (s *Server) recoverRemoteArchiveJournal(name string) error {
 }
 
 func (s *Server) deleteRemoteTaskArchive(job *pgdb.TaskArchive) error {
+	return s.deleteRemoteTaskArchiveContext(s.ctx, job)
+}
+
+func (s *Server) deleteRemoteTaskArchiveContext(ctx context.Context, job *pgdb.TaskArchive) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	journal, err := s.writeRemoteArchiveJournal(remoteArchiveJournal{ArchiveID: job.ID, URI: job.ArchivePath, Operation: "delete"})
 	if err != nil {
 		return err
 	}
-	if err := s.m.pg.DeleteTaskArchiveStub(job.ID); err != nil {
+	if err := s.m.pg.DeleteTaskArchiveStubContext(ctx, job.ID); err != nil {
 		// A connection failure can leave the transaction's commit ambiguous.
 		// Recovery consults PostgreSQL before deciding whether to delete.
 		return err
 	}
-	if err := s.recoverRemoteArchiveJournal(journal); err != nil {
+	if err := s.recoverRemoteArchiveJournalContext(ctx, journal); err != nil {
 		// The task is gone; the durable outbox retries the remaining object cleanup.
 		log.Printf("[task-archive] archive %d deleted; remote cleanup pending: %v", job.ID, err)
 	}

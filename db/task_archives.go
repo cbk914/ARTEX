@@ -567,21 +567,30 @@ UNION SELECT value::bigint FROM findings finding
 // writes are already quiescent at the server barrier; repeatable-read also keeps
 // the asset and accounting views mutually consistent during serialization.
 func (d *DB) SnapshotTaskArchive(taskID int64) (*TaskArchiveSnapshot, error) {
-	return d.snapshotTaskArchive(taskID, nil)
+	return d.snapshotTaskArchive(context.Background(), taskID, nil)
 }
 
 // SnapshotTaskArchiveWithLLMRecords streams the heavyweight record history to
 // llmRecords while all other task-owned data is read from the same repeatable
 // PostgreSQL snapshot.
 func (d *DB) SnapshotTaskArchiveWithLLMRecords(taskID int64, llmRecords io.Writer) (*TaskArchiveSnapshot, error) {
+	return d.SnapshotTaskArchiveWithLLMRecordsContext(context.Background(), taskID, llmRecords)
+}
+
+// SnapshotTaskArchiveWithLLMRecordsContext lets the archive worker cancel the
+// repeatable-read transaction when its job deadline expires.
+func (d *DB) SnapshotTaskArchiveWithLLMRecordsContext(ctx context.Context, taskID int64, llmRecords io.Writer) (*TaskArchiveSnapshot, error) {
 	if llmRecords == nil {
 		return nil, errors.New("nil LLM record archive writer")
 	}
-	return d.snapshotTaskArchive(taskID, llmRecords)
+	return d.snapshotTaskArchive(ctx, taskID, llmRecords)
 }
 
-func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchiveSnapshot, error) {
-	tx, err := d.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+func (d *DB) snapshotTaskArchive(ctx context.Context, taskID int64, llmRecords io.Writer) (*TaskArchiveSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	tx, err := d.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
@@ -628,6 +637,9 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 	counts := make(map[string]int64, len(queries))
 	streamedTables := map[string]string{}
 	for _, query := range queries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if query.name == "llm_records" && llmRecords != nil {
 			count, err := streamArchiveRows(tx, llmRecords, query.query, query.args...)
 			if err != nil {
@@ -676,6 +688,9 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		ExplorationID: expID, SourceTaskIDs: sources, Hosts: hosts, ExclusiveHosts: exclusiveHosts,
 		ExclusiveAssetIDs: exclusiveAssetIDs, Tables: tables, StreamedTables: streamedTables,
 		DataCounts: counts, AggregateStats: stats,
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return snapshot, tx.Commit()
 }

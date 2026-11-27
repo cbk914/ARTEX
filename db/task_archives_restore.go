@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,21 @@ func (d *DB) CompleteTaskArchive(
 	archivePath, sha256 string,
 	originalSize, compressedSize int64,
 ) error {
+	return d.CompleteTaskArchiveContext(context.Background(), archiveID, snapshot, archivePath, sha256, originalSize, compressedSize)
+}
+
+// CompleteTaskArchiveContext binds the compaction transaction to the archive
+// job deadline. A cancelled transaction must leave the hot task intact.
+func (d *DB) CompleteTaskArchiveContext(
+	ctx context.Context,
+	archiveID int64,
+	snapshot *TaskArchiveSnapshot,
+	archivePath, sha256 string,
+	originalSize, compressedSize int64,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if snapshot == nil || snapshot.FormatVersion != TaskArchiveFormatVersion {
 		return ErrTaskArchiveFormatMismatch
 	}
@@ -32,7 +48,7 @@ func (d *DB) CompleteTaskArchive(
 	if err != nil {
 		return err
 	}
-	tx, err := d.Begin()
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -134,6 +150,9 @@ WHERE id=$1`, archiveID, ArchiveReady, archivePath, sha256, originalSize, compre
 		string(countsRaw), string(statsRaw), snapshot.FormatVersion); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -141,7 +160,11 @@ WHERE id=$1`, archiveID, ArchiveReady, archivePath, sha256, originalSize, compre
 // idempotent for accounting/traffic retry scenarios and returns non-fatal
 // warnings for global objects that intentionally are not recreated.
 func (d *DB) RestoreTaskArchive(archiveID int64, snapshot *TaskArchiveSnapshot, remainingTimeoutSeconds int64) ([]string, error) {
-	return d.restoreTaskArchive(archiveID, snapshot, remainingTimeoutSeconds, nil)
+	return d.RestoreTaskArchiveContext(context.Background(), archiveID, snapshot, remainingTimeoutSeconds)
+}
+
+func (d *DB) RestoreTaskArchiveContext(ctx context.Context, archiveID int64, snapshot *TaskArchiveSnapshot, remainingTimeoutSeconds int64) ([]string, error) {
+	return d.restoreTaskArchive(ctx, archiveID, snapshot, remainingTimeoutSeconds, nil)
 }
 
 // RestoreTaskArchiveWithLLMRecords restores a v2 package whose heavyweight LLM
@@ -152,18 +175,32 @@ func (d *DB) RestoreTaskArchiveWithLLMRecords(
 	remainingTimeoutSeconds int64,
 	llmRecords io.Reader,
 ) ([]string, error) {
-	if llmRecords == nil {
-		return nil, errors.New("nil streamed LLM record reader")
-	}
-	return d.restoreTaskArchive(archiveID, snapshot, remainingTimeoutSeconds, llmRecords)
+	return d.RestoreTaskArchiveWithLLMRecordsContext(context.Background(), archiveID, snapshot, remainingTimeoutSeconds, llmRecords)
 }
 
-func (d *DB) restoreTaskArchive(
+func (d *DB) RestoreTaskArchiveWithLLMRecordsContext(
+	ctx context.Context,
 	archiveID int64,
 	snapshot *TaskArchiveSnapshot,
 	remainingTimeoutSeconds int64,
 	llmRecords io.Reader,
 ) ([]string, error) {
+	if llmRecords == nil {
+		return nil, errors.New("nil streamed LLM record reader")
+	}
+	return d.restoreTaskArchive(ctx, archiveID, snapshot, remainingTimeoutSeconds, llmRecords)
+}
+
+func (d *DB) restoreTaskArchive(
+	ctx context.Context,
+	archiveID int64,
+	snapshot *TaskArchiveSnapshot,
+	remainingTimeoutSeconds int64,
+	llmRecords io.Reader,
+) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if snapshot == nil || !IsTaskArchiveFormatSupported(snapshot.FormatVersion) {
 		return nil, ErrTaskArchiveFormatMismatch
 	}
@@ -176,7 +213,7 @@ func (d *DB) restoreTaskArchive(
 	if streamedLLMRecords != "" && llmRecords == nil {
 		return nil, fmt.Errorf("%w: streamed LLM records are missing", ErrTaskArchiveFormatMismatch)
 	}
-	tx, err := d.Begin()
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -296,6 +333,9 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	}
 	warningsRaw, _ := json.Marshal(warnings)
 	if _, err := tx.Exec(`UPDATE task_archives SET warnings=$2,phase='database_restored',progress=85,error='' WHERE id=$1`, archiveID, string(warningsRaw)); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	return warnings, tx.Commit()
@@ -745,7 +785,14 @@ func nilIfEmptyString(value string) any {
 // CompleteTaskArchiveRestore removes compact metadata after every external
 // component has been verified and the package has been consumed.
 func (d *DB) CompleteTaskArchiveRestore(archiveID int64) error {
-	res, err := d.Exec(`DELETE FROM task_archives archive USING tasks task
+	return d.CompleteTaskArchiveRestoreContext(context.Background(), archiveID)
+}
+
+func (d *DB) CompleteTaskArchiveRestoreContext(ctx context.Context, archiveID int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	res, err := d.ExecContext(ctx, `DELETE FROM task_archives archive USING tasks task
 WHERE archive.id=$1 AND archive.task_id=task.id AND task.deleted_at IS NULL AND task.archived_at IS NULL`, archiveID)
 	if err != nil {
 		return err
@@ -760,7 +807,14 @@ WHERE archive.id=$1 AND archive.task_id=task.id AND task.deleted_at IS NULL AND 
 // DeleteTaskArchiveStub permanently removes the cold task after its package has
 // been staged for deletion. Dependency protection is rechecked transactionally.
 func (d *DB) DeleteTaskArchiveStub(archiveID int64) error {
-	tx, err := d.Begin()
+	return d.DeleteTaskArchiveStubContext(context.Background(), archiveID)
+}
+
+func (d *DB) DeleteTaskArchiveStubContext(ctx context.Context, archiveID int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -797,6 +851,9 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM explorations WHERE id=$1`, expID); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return tx.Commit()

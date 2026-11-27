@@ -5,11 +5,70 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestImportArchiveBudgetRejectsOversizeAndSymlinkedBlob(t *testing.T) {
+	store, err := Open(t.TempDir(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	content := []byte("synthetic restored traffic blob")
+	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])
+	archiveDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(archiveDir, "blobs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := json.Marshal(ArchiveSnapshot{Version: archiveVersionV2, Blobs: []string{hash}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(archiveDir, "traffic.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ImportArchiveBudget(context.Background(), archiveDir, int64(len(manifest)-1), 1<<20); !errors.Is(err, errTrafficArchiveBudget) {
+		t.Fatalf("oversized manifest error=%v", err)
+	}
+	source := filepath.Join(archiveDir, "blobs", hash+".bin")
+	secret := filepath.Join(t.TempDir(), "outside-secret")
+	if err := os.WriteFile(secret, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, source); err != nil {
+		t.Skipf("symlink fixture unavailable: %v", err)
+	}
+	if _, err := store.ImportArchiveBudget(context.Background(), archiveDir, 1<<20, 1<<20); err == nil {
+		t.Fatal("import followed a symlink outside the extracted archive")
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ImportArchiveBudget(context.Background(), archiveDir, 1<<20, 1); err == nil {
+		t.Fatal("import exceeded the single-blob budget")
+	}
+	if _, err := store.ImportArchiveBudget(context.Background(), archiveDir, 1<<20, 1<<20); err != nil {
+		t.Fatalf("valid archive import failed: %v", err)
+	}
+	destination := filepath.Join(store.dir, "_blobs", "sha256", hash[:2], hash+".bin")
+	if got, err := os.ReadFile(destination); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("restored blob=%q err=%v", got, err)
+	}
+	if err := os.WriteFile(destination, []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ImportArchiveBudget(context.Background(), archiveDir, 1<<20, 1<<20); err == nil {
+		t.Fatal("import accepted a corrupt existing blob")
+	}
+}
 
 func TestExportHostsManifestBudgetPreservesPriorSnapshot(t *testing.T) {
 	store, err := Open(t.TempDir(), "127.0.0.1:0")

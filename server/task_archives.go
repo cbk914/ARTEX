@@ -139,19 +139,28 @@ func (s *Server) runClaimedTaskArchiveJob(job *pgdb.TaskArchive) (runErr error) 
 			runErr = fmt.Errorf("archive worker panic: %v", r)
 		}
 	}()
+	timeout, err := configuredArchiveJobTimeout()
+	if err != nil {
+		return err
+	}
+	jobCtx, cancel := context.WithTimeout(s.ctx, timeout)
+	defer cancel()
 	switch job.State {
 	case pgdb.Archiving:
-		return s.archiveTask(job)
+		return s.archiveTask(jobCtx, job)
 	case pgdb.Restoring:
-		return s.restoreTaskArchive(job)
+		return s.restoreTaskArchive(jobCtx, job)
 	case pgdb.Deleting:
-		return s.deleteTaskArchive(job)
+		return s.deleteTaskArchive(jobCtx, job)
 	default:
 		return fmt.Errorf("unknown claimed archive state %q", job.State)
 	}
 }
 
-func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
+func (s *Server) archiveTask(ctx context.Context, job *pgdb.TaskArchive) (runErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.archiveStoreErr != nil {
 		return s.archiveStoreErr
 	}
@@ -166,9 +175,12 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		}
 	}()
 	s.cancelTaskChat(taskID, agent.AbortTaskDeleted)
-	drainCtx, cancel := context.WithTimeout(s.ctx, taskDeleteDrainTimeout)
+	drainCtx, cancel := context.WithTimeout(ctx, taskDeleteDrainTimeout)
 	defer cancel()
 	if err := s.waitTaskQuiescent(drainCtx, taskID); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return errors.New("task still has running agents; pause it before retrying the archive")
 	}
 	if err := s.drainTaskSideQuestions(drainCtx, taskID); err != nil {
@@ -180,6 +192,9 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	}
 	if task == nil {
 		return pgdb.ErrTaskArchiveNotFound
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "stage_files", 10)
 	fileStage, err := stageTaskArchiveFiles(s.m.dir, job.ID, taskID, task.ExplorationID)
@@ -200,7 +215,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		return err
 	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "snapshot_database", 20)
-	snapshot, snapshotErr := s.m.pg.SnapshotTaskArchiveWithLLMRecords(job.TaskID, streamFile)
+	snapshot, snapshotErr := s.m.pg.SnapshotTaskArchiveWithLLMRecordsContext(ctx, job.TaskID, streamFile)
 	var syncErr error
 	if snapshotErr == nil {
 		syncErr = streamFile.Sync()
@@ -218,7 +233,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		if err != nil {
 			return err
 		}
-		trafficCount, err := s.m.traffic.ExportHostsBudget(s.ctx, snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"), budget.file, budget.traffic)
+		trafficCount, err := s.m.traffic.ExportHostsBudget(ctx, snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"), budget.file, budget.traffic)
 		if err != nil {
 			return err
 		}
@@ -229,11 +244,11 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	if err != nil {
 		return err
 	}
-	if err = s.evidenceStore().CopySnapshots(s.ctx, evidenceSnapshots, filepath.Join(fileStage.payload, "evidence")); err != nil {
+	if err = s.evidenceStore().CopySnapshots(ctx, evidenceSnapshots, filepath.Join(fileStage.payload, "evidence")); err != nil {
 		return err
 	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "compress", 50)
-	originalSize, compressedSize, checksum, err := writeTaskArchivePackageContext(s.ctx, archivePath, fileStage.payload, snapshot)
+	originalSize, compressedSize, checksum, err := writeTaskArchivePackageContext(ctx, archivePath, fileStage.payload, snapshot)
 	if err != nil {
 		return err
 	}
@@ -254,7 +269,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 			return err
 		}
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "upload_and_verify", 65)
-		if err := s.archiveStore.Upload(s.ctx, storedPath, archivePath, checksum); err != nil {
+		if err := s.archiveStore.Upload(ctx, storedPath, archivePath, checksum); err != nil {
 			return err
 		}
 	}
@@ -272,7 +287,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		}()
 	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "compact_database", 78)
-	if err := s.m.pg.CompleteTaskArchive(job.ID, snapshot, storedPath, checksum, originalSize, compressedSize); err != nil {
+	if err := s.m.pg.CompleteTaskArchiveContext(ctx, job.ID, snapshot, storedPath, checksum, originalSize, compressedSize); err != nil {
 		return err
 	}
 	committed = true
@@ -304,7 +319,10 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	return nil
 }
 
-func (s *Server) restoreTaskArchive(job *pgdb.TaskArchive) (runErr error) {
+func (s *Server) restoreTaskArchive(ctx context.Context, job *pgdb.TaskArchive) (runErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.validateStoredArchive(job.ArchivePath); err != nil {
 		return err
 	}
@@ -313,10 +331,10 @@ func (s *Server) restoreTaskArchive(job *pgdb.TaskArchive) (runErr error) {
 	if restored, err := s.m.pg.IsTaskArchiveRestored(job.ID); err != nil {
 		return err
 	} else if restored {
-		if err := s.removeStoredArchive(job.ArchivePath); err != nil {
+		if err := s.removeStoredArchiveContext(ctx, job.ArchivePath); err != nil {
 			return err
 		}
-		if err := s.m.pg.CompleteTaskArchiveRestore(job.ID); err != nil {
+		if err := s.m.pg.CompleteTaskArchiveRestoreContext(ctx, job.ID); err != nil {
 			return err
 		}
 		s.loadRestoredTask(job.TaskID)
@@ -343,11 +361,11 @@ func (s *Server) restoreTaskArchive(job *pgdb.TaskArchive) (runErr error) {
 		}
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "download_and_verify", 12)
 		packagePath = filepath.Join(extracted, "download.tar.zst")
-		if err := s.archiveStore.Download(s.ctx, job.ArchivePath, packagePath, job.SHA256, job.CompressedSize); err != nil {
+		if err := s.archiveStore.Download(ctx, job.ArchivePath, packagePath, job.SHA256, job.CompressedSize); err != nil {
 			return err
 		}
 	}
-	if err := extractTaskArchivePackageContext(s.ctx, packagePath, job.SHA256, extracted); err != nil {
+	if err := extractTaskArchivePackageContext(ctx, packagePath, job.SHA256, extracted); err != nil {
 		return err
 	}
 	manifestRaw, err := os.ReadFile(filepath.Join(extracted, "manifest.json"))
@@ -365,12 +383,15 @@ func (s *Server) restoreTaskArchive(job *pgdb.TaskArchive) (runErr error) {
 	if err != nil {
 		return err
 	}
-	return s.evidenceStore().WithInstalledSnapshots(s.ctx, evidenceSnapshots, filepath.Join(extracted, "evidence"), func() error {
-		return s.restoreTaskArchivePayload(job, &snapshot, extracted)
+	return s.evidenceStore().WithInstalledSnapshots(ctx, evidenceSnapshots, filepath.Join(extracted, "evidence"), func() error {
+		return s.restoreTaskArchivePayload(ctx, job, &snapshot, extracted)
 	})
 }
 
-func (s *Server) restoreTaskArchivePayload(job *pgdb.TaskArchive, snapshot *pgdb.TaskArchiveSnapshot, extracted string) (runErr error) {
+func (s *Server) restoreTaskArchivePayload(ctx context.Context, job *pgdb.TaskArchive, snapshot *pgdb.TaskArchiveSnapshot, extracted string) (runErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var err error
 	var llmRecordsFile *os.File
 	relative, hasStreamedLLMRecords := snapshot.StreamedTables["llm_records"]
@@ -392,7 +413,11 @@ func (s *Server) restoreTaskArchivePayload(job *pgdb.TaskArchive, snapshot *pgdb
 	}
 	if s.m.traffic != nil {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "restore_traffic", 35)
-		if _, err := s.m.traffic.ImportArchive(filepath.Join(extracted, "traffic")); err != nil {
+		budget, err := configuredArchiveBudget()
+		if err != nil {
+			return err
+		}
+		if _, err := s.m.traffic.ImportArchiveBudget(ctx, filepath.Join(extracted, "traffic"), budget.traffic, budget.file); err != nil {
 			return err
 		}
 	}
@@ -410,14 +435,14 @@ func (s *Server) restoreTaskArchivePayload(job *pgdb.TaskArchive, snapshot *pgdb
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "restore_database", 70)
 	var warnings []string
 	if llmRecordsFile != nil {
-		warnings, err = s.m.pg.RestoreTaskArchiveWithLLMRecords(
+		warnings, err = s.m.pg.RestoreTaskArchiveWithLLMRecordsContext(ctx,
 			job.ID, snapshot, job.RemainingTimeoutSeconds, llmRecordsFile,
 		)
 		closeErr := llmRecordsFile.Close()
 		llmRecordsFile = nil
 		err = errors.Join(err, closeErr)
 	} else {
-		warnings, err = s.m.pg.RestoreTaskArchive(job.ID, snapshot, job.RemainingTimeoutSeconds)
+		warnings, err = s.m.pg.RestoreTaskArchiveContext(ctx, job.ID, snapshot, job.RemainingTimeoutSeconds)
 	}
 	if err != nil {
 		return err
@@ -437,10 +462,10 @@ func (s *Server) restoreTaskArchivePayload(job *pgdb.TaskArchive, snapshot *pgdb
 		return err
 	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "consume_package", 95)
-	if err := s.removeStoredArchive(job.ArchivePath); err != nil {
+	if err := s.removeStoredArchiveContext(ctx, job.ArchivePath); err != nil {
 		return err
 	}
-	if err := s.m.pg.CompleteTaskArchiveRestore(job.ID); err != nil {
+	if err := s.m.pg.CompleteTaskArchiveRestoreContext(ctx, job.ID); err != nil {
 		return err
 	}
 	s.loadRestoredTask(job.TaskID)
@@ -473,12 +498,15 @@ func (s *Server) loadRestoredTask(taskID int64) {
 	}
 }
 
-func (s *Server) deleteTaskArchive(job *pgdb.TaskArchive) error {
+func (s *Server) deleteTaskArchive(ctx context.Context, job *pgdb.TaskArchive) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.validateStoredArchive(job.ArchivePath); err != nil {
 		return err
 	}
 	if strings.HasPrefix(job.ArchivePath, "s3://") {
-		return s.deleteRemoteTaskArchive(job)
+		return s.deleteRemoteTaskArchiveContext(ctx, job)
 	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "stage_package_delete", 35)
 	staged, moved, err := stageTaskArchivePackageDelete(job.ArchivePath, job.ID)
@@ -486,7 +514,7 @@ func (s *Server) deleteTaskArchive(job *pgdb.TaskArchive) error {
 		return err
 	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "delete_metadata", 70)
-	if err := s.m.pg.DeleteTaskArchiveStub(job.ID); err != nil {
+	if err := s.m.pg.DeleteTaskArchiveStubContext(ctx, job.ID); err != nil {
 		if moved {
 			_ = os.Rename(staged, job.ArchivePath)
 		}

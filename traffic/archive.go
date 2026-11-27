@@ -335,6 +335,79 @@ func (t *Traffic) copyArchiveBlob(ctx context.Context, hash, destinationDir stri
 	return os.Rename(temporary.Name(), destination)
 }
 
+func (t *Traffic) copyImportedArchiveBlob(ctx context.Context, root *os.Root, hash string, maxBytes int64) error {
+	relative := filepath.Join("blobs", hash+".bin")
+	selected, err := root.Lstat(relative)
+	if err != nil {
+		return err
+	}
+	if !selected.Mode().IsRegular() || selected.Size() < 0 || selected.Size() > maxBytes {
+		return errors.New("archived traffic blob is unsafe or exceeds its limit")
+	}
+	source, err := root.Open(relative)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	opened, err := source.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(selected, opened) || opened.Size() != selected.Size() {
+		return errors.New("archived traffic blob changed at open")
+	}
+	bucket := filepath.Join(t.dir, "_blobs", "sha256", hash[:2])
+	if err := os.MkdirAll(bucket, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(bucket, 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(bucket, ".restore-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temporary.Name())
+	hasher := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(temporary, hasher), archiveReadContext{ctx: ctx, r: io.LimitReader(source, maxBytes+1)})
+	final, statErr := source.Stat()
+	if copyErr == nil {
+		copyErr = temporary.Sync()
+	}
+	closeErr := temporary.Close()
+	if err := errors.Join(copyErr, statErr, closeErr, ctx.Err()); err != nil {
+		return err
+	}
+	if n != selected.Size() || n > maxBytes || !os.SameFile(selected, final) || final.Size() != selected.Size() || !final.ModTime().Equal(selected.ModTime()) || hex.EncodeToString(hasher.Sum(nil)) != hash {
+		return fmt.Errorf("traffic blob checksum or source identity mismatch: %s", hash)
+	}
+	destination := filepath.Join(bucket, hash+".bin")
+	if existing, err := os.Lstat(destination); err == nil {
+		if !existing.Mode().IsRegular() || existing.Size() != n {
+			return errors.New("existing traffic blob is unsafe")
+		}
+		file, err := os.Open(destination)
+		if err != nil {
+			return err
+		}
+		openedExisting, statErr := file.Stat()
+		if statErr != nil || !openedExisting.Mode().IsRegular() || !os.SameFile(existing, openedExisting) {
+			file.Close()
+			return errors.New("existing traffic blob changed at open")
+		}
+		existingHash := sha256.New()
+		_, readErr := io.Copy(existingHash, archiveReadContext{ctx: ctx, r: io.LimitReader(file, maxBytes+1)})
+		closeErr := file.Close()
+		if err := errors.Join(readErr, closeErr, ctx.Err()); err != nil {
+			return err
+		}
+		if hex.EncodeToString(existingHash.Sum(nil)) != hash {
+			return errors.New("existing traffic blob failed integrity check")
+		}
+		return os.Chmod(destination, 0o600)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(temporary.Name(), destination)
+}
+
 // ImportArchive imports only missing exchange IDs. Current hot rows always win,
 // and repeated restore attempts are safe after a partial external failure.
 // Version 1 archives carry no rewrite provenance (imported as unrewritten).
@@ -343,14 +416,66 @@ func (t *Traffic) copyArchiveBlob(ctx context.Context, hash, destinationDir stri
 // outcome='applied', rule_snapshot=NULL) so RewriteInfo and the rewritten list
 // filter return the same provenance without inventing a rule snapshot.
 func (t *Traffic) ImportArchive(dir string) (int64, error) {
+	return t.ImportArchiveContext(context.Background(), dir)
+}
+
+// ImportArchiveContext binds the SQLite restore transaction and per-item
+// processing to the archive job context. Package size validation remains with
+// the caller, before this function opens the extracted manifest.
+func (t *Traffic) ImportArchiveContext(ctx context.Context, dir string) (int64, error) {
+	return t.ImportArchiveBudget(ctx, dir, defaultTrafficSnapshotLimit, defaultArchiveBlobLimit)
+}
+
+// ImportArchiveBudget checks extracted traffic files before loading the
+// manifest or copying blobs. Larger historical manifests require an explicit
+// reviewed budget override at the archive worker.
+func (t *Traffic) ImportArchiveBudget(ctx context.Context, dir string, maxSnapshotBytes, maxBlobBytes int64) (int64, error) {
 	if t == nil {
 		return 0, nil
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "traffic.json"))
-	if os.IsNotExist(err) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if maxSnapshotBytes <= 0 || maxSnapshotBytes > hardTrafficSnapshotLimit || maxBlobBytes <= 0 || maxBlobBytes > hardArchiveBlobLimit {
+		return 0, errors.New("invalid traffic archive restore budget")
+	}
+	root, err := os.OpenRoot(dir)
+	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
 	}
 	if err != nil {
+		return 0, err
+	}
+	defer root.Close()
+	info, err := root.Lstat("traffic.json")
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxSnapshotBytes {
+		return 0, errTrafficArchiveBudget
+	}
+	file, err := root.Open("traffic.json")
+	if err != nil {
+		return 0, err
+	}
+	opened, statErr := file.Stat()
+	if statErr != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) || opened.Size() != info.Size() {
+		file.Close()
+		return 0, errors.New("traffic archive manifest changed at open")
+	}
+	raw, readErr := io.ReadAll(archiveReadContext{ctx: ctx, r: io.LimitReader(file, maxSnapshotBytes+1)})
+	final, finalErr := file.Stat()
+	closeErr := file.Close()
+	if err := errors.Join(readErr, finalErr, closeErr, ctx.Err()); err != nil {
+		return 0, err
+	}
+	if int64(len(raw)) != info.Size() || int64(len(raw)) > maxSnapshotBytes || !os.SameFile(info, final) || final.Size() != info.Size() || !final.ModTime().Equal(info.ModTime()) {
+		return 0, errTrafficArchiveBudget
+	}
+	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 	var snapshot ArchiveSnapshot
@@ -363,34 +488,26 @@ func (t *Traffic) ImportArchive(dir string) (int64, error) {
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
 	for _, hash := range snapshot.Blobs {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		if !blobHashRe.MatchString(hash) {
 			return 0, fmt.Errorf("invalid archived traffic blob %q", hash)
 		}
-		data, err := os.ReadFile(filepath.Join(dir, "blobs", hash+".bin"))
-		if err != nil {
+		if err := t.copyImportedArchiveBlob(ctx, root, hash, maxBlobBytes); err != nil {
 			return 0, err
 		}
-		sum := sha256.Sum256(data)
-		if hex.EncodeToString(sum[:]) != hash {
-			return 0, fmt.Errorf("traffic blob checksum mismatch: %s", hash)
-		}
-		destination := filepath.Join(t.dir, "_blobs", "sha256", hash[:2], hash+".bin")
-		if _, err := os.Stat(destination); os.IsNotExist(err) {
-			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-				return 0, err
-			}
-			if err := os.WriteFile(destination, data, 0o644); err != nil {
-				return 0, err
-			}
-		}
 	}
-	tx, err := t.db.Begin()
+	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback() //nolint:errcheck
 	var imported int64
 	for _, item := range snapshot.Exchanges {
+		if err := ctx.Err(); err != nil {
+			return imported, err
+		}
 		res, err := tx.Exec(`INSERT OR IGNORE INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
 VALUES(?,?,?,?,?,?,?,?,?,?,'')`, item.ID, item.TS, item.Host, item.Method, item.URLTemplate,
 			item.URL, item.Status, item.ContentType, item.ReqLen, item.RespLen)
@@ -429,6 +546,9 @@ VALUES(?,?,?,?,?,?,?)`, item.ID, item.ReqHead, item.ReqBody, nullIfEmpty(item.Re
 			}
 		}
 		imported++
+	}
+	if err := ctx.Err(); err != nil {
+		return imported, err
 	}
 	if err := tx.Commit(); err != nil {
 		return imported, err
