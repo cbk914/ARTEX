@@ -51,8 +51,13 @@ type Server struct {
 	engine *Engine
 	ctx    context.Context
 
-	skillDir string // root directory for skill subdirectories
-	jwtKey   []byte // HS256 signing key loaded from / generated into keyDir/jwt.key
+	skillDir    string // root directory for skill subdirectories
+	jwtKey      []byte // HS256 signing key loaded from / generated into keyDir/jwt.key
+	revocations interface {
+		IsSessionRevoked(string) (bool, error)
+		RevokeSession(string, time.Time) error
+	}
+	revocationRequired bool
 
 	scrubSecrets bool // drop ARTEX_PG_DSN and the API keys from the environment once read (binary only)
 
@@ -198,13 +203,16 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, chatBusy: map[string]bool{},
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, revocationRequired: true, chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{},
 		taskAgents:     map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1),
 		loginLimit: newLoginLimiter(time.Now), pwdLimit: newLoginLimiter(time.Now)}
+	if m != nil && m.pg != nil {
+		s.revocations = m.pg
+	}
 	s.llmHealth, s.llmHealthSync = newLLMHealthRegistry(ctx, m.pg)
 	for _, o := range opts {
 		o(s)

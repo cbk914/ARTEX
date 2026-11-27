@@ -187,12 +187,17 @@ func signJWT(key []byte) (string, error) {
 
 // signJWTVersion issues a 7-day HS256 token bound to a password version.
 func signJWTVersion(key []byte, version int64) (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, sessionClaims{
 		Pwd: &version,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   "ARTEX",
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(jwtTTL)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ID:        hex.EncodeToString(nonce[:]),
 		},
 	}).SignedString(key)
 }
@@ -221,7 +226,14 @@ func (s *Server) sessionOK(token string) bool {
 	if s.pwdState.Load() == pwdUnreadable {
 		return false
 	}
-	return verifyJWT(token, s.jwtKey, s.pwdVersion.Load())
+	if !verifyJWT(token, s.jwtKey, s.pwdVersion.Load()) {
+		return false
+	}
+	if s.revocations != nil {
+		revoked, err := s.revocations.IsSessionRevoked(token)
+		return err == nil && !revoked
+	}
+	return !s.revocationRequired
 }
 
 func (s *Server) passwordHashKey() string {
@@ -466,8 +478,8 @@ func (s *Server) authMigrate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
-// authLogout clears a browser cookie. Persistent token revocation is tracked
-// separately; this endpoint does not claim to invalidate a copied bearer.
+// authLogout persists the token digest before clearing the browser cookie.
+// A database outage fails closed so a copied bearer cannot silently survive.
 func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 	if !cookieAuthenticated(r) {
 		writeErr(w, http.StatusUnauthorized, "browser session cookie required")
@@ -475,6 +487,20 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	if !sameOrigin(r) {
 		writeErr(w, http.StatusForbidden, "cross-origin cookie logout refused")
+		return
+	}
+	cookie, _ := r.Cookie("artex_token")
+	claims, valid := parseSessionClaims(cookie.Value, s.jwtKey)
+	if !valid || !s.sessionOK(cookie.Value) {
+		writeErr(w, http.StatusUnauthorized, "session is invalid or expired")
+		return
+	}
+	if s.revocations == nil {
+		writeErr(w, http.StatusServiceUnavailable, errDataSourceUnavailable)
+		return
+	}
+	if err := s.revocations.RevokeSession(cookie.Value, claims.ExpiresAt.Time); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, errDataSourceUnavailable)
 		return
 	}
 	clearBrowserSessionCookie(w, r)

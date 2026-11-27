@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,57 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+type sessionRevocationsStub struct {
+	tokens map[string]bool
+	err    error
+}
+
+func (s *sessionRevocationsStub) IsSessionRevoked(token string) (bool, error) {
+	return s.tokens[token], s.err
+}
+
+func TestSessionRevocationReadFailureFailsClosed(t *testing.T) {
+	s := &Server{jwtKey: []byte("0123456789abcdef0123456789abcdef"), revocations: &sessionRevocationsStub{err: errors.New("database unavailable")}}
+	token, err := signJWT(s.jwtKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.sessionOK(token) {
+		t.Fatal("session accepted when revocation store could not answer")
+	}
+	s.revocations = nil
+	s.revocationRequired = true
+	if s.sessionOK(token) {
+		t.Fatal("session accepted without a required revocation store")
+	}
+}
+
+func (s *sessionRevocationsStub) RevokeSession(token string, _ time.Time) error {
+	s.tokens[token] = true
+	return nil
+}
+
+func TestNewSessionsHaveDistinctIdentifiers(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	first, err := signJWT(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := signJWT(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("two new sessions shared a token")
+	}
+	for _, token := range []string{first, second} {
+		claims, ok := parseSessionClaims(token, key)
+		if !ok || len(claims.ID) != 32 {
+			t.Fatal("new session lacks its random identifier")
+		}
+	}
+}
 
 func TestBrowserLoginIssuesServerCookieWithoutTokenBody(t *testing.T) {
 	hash, err := bcrypt.GenerateFromPassword([]byte("correct-horse-1"), bcrypt.MinCost)
@@ -71,7 +123,7 @@ func TestBrowserLoginIssuesServerCookieWithoutTokenBody(t *testing.T) {
 }
 
 func TestBrowserSessionUpgradeLogoutAndLocalStreamCORS(t *testing.T) {
-	s := &Server{jwtKey: []byte("0123456789abcdef0123456789abcdef")}
+	s := &Server{jwtKey: []byte("0123456789abcdef0123456789abcdef"), revocations: &sessionRevocationsStub{tokens: make(map[string]bool)}}
 	token, err := signJWT(s.jwtKey)
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +168,9 @@ func TestBrowserSessionUpgradeLogoutAndLocalStreamCORS(t *testing.T) {
 	s.authLogout(w, logout)
 	if cookies := w.Result().Cookies(); w.Code != 200 || len(cookies) != 1 || cookies[0].MaxAge != -1 || !cookies[0].HttpOnly {
 		t.Fatalf("logout status=%d cookies=%v", w.Code, cookies)
+	}
+	if s.sessionOK(token) {
+		t.Fatal("logout left the same token valid as a copied bearer")
 	}
 
 	t.Setenv("ARTEX_BROWSER_DEV_ORIGIN", "http://localhost:5173")
