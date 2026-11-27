@@ -31,13 +31,15 @@ func (s *sandboxTaskStore) GetTask(id int64) (*db.Task, error) {
 }
 
 type sandboxBackendRecorder struct {
-	mu         sync.Mutex
-	created    map[int64]int
-	ran        []string
-	put        []string
-	removed    []string
-	removeFail bool
-	onCreate   func()
+	mu          sync.Mutex
+	created     map[int64]int
+	ran         []string
+	put         []string
+	lastInput   []byte
+	lastCommand string
+	removed     []string
+	removeFail  bool
+	onCreate    func()
 }
 
 func (b *sandboxBackendRecorder) Create(_ context.Context, id int64) (string, error) {
@@ -62,6 +64,8 @@ func (b *sandboxBackendRecorder) RunInput(_ context.Context, handle, command str
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.ran = append(b.ran, handle+":"+command+":"+string(input))
+	b.lastInput = append([]byte(nil), input...)
+	b.lastCommand = command
 	return handle, nil
 }
 

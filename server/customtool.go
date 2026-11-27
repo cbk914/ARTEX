@@ -455,7 +455,7 @@ func (s *Server) runCommandTool(ctx context.Context, key string, execRaw json.Ra
 		return actool.Errorf(guard.TargetBlockMessage(res)), nil
 	}
 	runInfo := agent.RunInfoFrom(ctx)
-	if s.taskSandboxes != nil && !(runInfo.SessionID != "" && runInfo.TaskID == 0 && runInfo.ExplorationID == 0) {
+	if s.taskSandboxes != nil && !pureConversationRun(runInfo) {
 		if spec.TimeoutMs < 0 || spec.TimeoutMs > 30000 {
 			return actool.Errorf("task sandbox command timeout must be between 1 and 30000 ms"), nil
 		}
@@ -482,6 +482,10 @@ func (s *Server) runCommandTool(ctx context.Context, key string, execRaw json.Ra
 	return actool.NewBash().Call(ctx, bashIn, tc)
 }
 
+func pureConversationRun(info agent.RunInfo) bool {
+	return info.SessionID != "" && info.TaskID == 0 && info.ExplorationID == 0
+}
+
 // ---------- script (Python only): temp file + stdin JSON + env ----------
 
 func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.RawMessage, params map[string]any, tc *actool.ToolContext) (actool.Result, error) {
@@ -493,6 +497,25 @@ func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.Raw
 	interp := s.pythonInterpreter()
 	if interp == "" {
 		return actool.Errorf("no python interpreter configured or detected (set it in system settings)"), nil
+	}
+	return s.runScriptToolWithInterpreter(ctx, key, spec, params, tc, interp)
+}
+
+func (s *Server) runScriptToolWithInterpreter(ctx context.Context, key string, spec scriptExec, params map[string]any, tc *actool.ToolContext, interp string) (actool.Result, error) {
+	runInfo := agent.RunInfoFrom(ctx)
+	if s.taskSandboxes != nil && !pureConversationRun(runInfo) {
+		if spec.TimeoutMs < 0 || spec.TimeoutMs > 30000 {
+			return actool.Errorf("task sandbox script timeout must be between 1 and 30000 ms"), nil
+		}
+		timeout := 30 * time.Second
+		if spec.TimeoutMs > 0 {
+			timeout = time.Duration(spec.TimeoutMs) * time.Millisecond
+		}
+		body, err := execPythonSandbox(ctx, s.taskSandboxes, runInfo, interp, spec.Code, params, timeout)
+		if err != nil {
+			return actool.Errorf("task sandbox script failed: " + err.Error()), nil
+		}
+		return actool.Text(actool.Capture(tc, body)), nil
 	}
 	workDir := s.m.dir
 	var sessionEnv []string
