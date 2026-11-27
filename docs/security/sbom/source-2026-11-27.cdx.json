@@ -2,10 +2,10 @@
   "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
   "bomFormat": "CycloneDX",
   "specVersion": "1.7",
-  "serialNumber": "urn:uuid:78ccbc2e-b0dc-4f5f-96b3-8b52f1bc518a",
+  "serialNumber": "urn:uuid:6fac50d7-985d-44f1-83c4-f893c4f8b092",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-11-27T03:50:12+00:00",
+    "timestamp": "2026-11-27T04:01:16+00:00",
     "tools": {
       "components": [
         {
@@ -20,7 +20,7 @@
       ]
     },
     "component": {
-      "bom-ref": "273c38e5-2166-4490-a852-e5adcfd2d4e4",
+      "bom-ref": "0edcbf8d-dd73-49b5-9cdc-492d8d6bf00e",
       "type": "application",
       "name": ".",
       "properties": [
@@ -33,9 +33,9 @@
   },
   "components": [
     {
-      "bom-ref": "202c959e-a89e-480d-b680-78492de9530e",
+      "bom-ref": "08ba56d6-13ae-4a01-b9b5-08261c868b67",
       "type": "application",
-      "name": "skills/api-recon/scripts/package-lock.json",
+      "name": "go.mod",
       "properties": [
         {
           "name": "aquasecurity:trivy:Class",
@@ -43,12 +43,12 @@
         },
         {
           "name": "aquasecurity:trivy:Type",
-          "value": "npm"
+          "value": "gomod"
         }
       ]
     },
     {
-      "bom-ref": "265096f3-75c9-43dd-a065-d3ed4135e470",
+      "bom-ref": "9322253a-9458-430b-b552-31c2e892562b",
       "type": "application",
       "name": "web/package-lock.json",
       "properties": [
@@ -63,9 +63,9 @@
       ]
     },
     {
-      "bom-ref": "4514f96b-dcb1-4e55-8981-320cb9e0e269",
+      "bom-ref": "d5e712f2-f8ad-40e8-9e36-77acee7bce0e",
       "type": "application",
-      "name": "go.mod",
+      "name": "skills/api-recon/scripts/package-lock.json",
       "properties": [
         {
           "name": "aquasecurity:trivy:Class",
@@ -73,7 +73,7 @@
         },
         {
           "name": "aquasecurity:trivy:Type",
-          "value": "gomod"
+          "value": "npm"
         }
       ]
     },
@@ -5874,10 +5874,10 @@
       ]
     },
     {
-      "bom-ref": "pkg:npm/caniuse-lite@1.0.30001799",
+      "bom-ref": "pkg:npm/caniuse-lite@1.0.30001828",
       "type": "library",
       "name": "caniuse-lite",
-      "version": "1.0.30001799",
+      "version": "1.0.30001828",
       "licenses": [
         {
           "license": {
@@ -5885,11 +5885,11 @@
           }
         }
       ],
-      "purl": "pkg:npm/caniuse-lite@1.0.30001799",
+      "purl": "pkg:npm/caniuse-lite@1.0.30001828",
       "properties": [
         {
           "name": "aquasecurity:trivy:PkgID",
-          "value": "caniuse-lite@1.0.30001799"
+          "value": "caniuse-lite@1.0.30001828"
         },
         {
           "name": "aquasecurity:trivy:PkgType",
@@ -11106,13 +11106,21 @@
   ],
   "dependencies": [
     {
-      "ref": "202c959e-a89e-480d-b680-78492de9530e",
+      "ref": "08ba56d6-13ae-4a01-b9b5-08261c868b67",
       "dependsOn": [
-        "pkg:npm/puppeteer-core@25.19.0"
+        "pkg:golang/github.com/autumn-27/artex"
       ]
     },
     {
-      "ref": "265096f3-75c9-43dd-a065-d3ed4135e470",
+      "ref": "0edcbf8d-dd73-49b5-9cdc-492d8d6bf00e",
+      "dependsOn": [
+        "08ba56d6-13ae-4a01-b9b5-08261c868b67",
+        "9322253a-9458-430b-b552-31c2e892562b",
+        "d5e712f2-f8ad-40e8-9e36-77acee7bce0e"
+      ]
+    },
+    {
+      "ref": "9322253a-9458-430b-b552-31c2e892562b",
       "dependsOn": [
         "pkg:npm/%40antv/g6@5.1.1",
         "pkg:npm/%40base-ui/react@1.6.0",
@@ -11144,17 +11152,9 @@
       ]
     },
     {
-      "ref": "273c38e5-2166-4490-a852-e5adcfd2d4e4",
+      "ref": "d5e712f2-f8ad-40e8-9e36-77acee7bce0e",
       "dependsOn": [
-        "202c959e-a89e-480d-b680-78492de9530e",
-        "265096f3-75c9-43dd-a065-d3ed4135e470",
-        "4514f96b-dcb1-4e55-8981-320cb9e0e269"
-      ]
-    },
-    {
-      "ref": "4514f96b-dcb1-4e55-8981-320cb9e0e269",
-      "dependsOn": [
-        "pkg:golang/github.com/autumn-27/artex"
+        "pkg:npm/puppeteer-core@25.19.0"
       ]
     },
     {
@@ -13067,7 +13067,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/caniuse-lite@1.0.30001799",
+      "ref": "pkg:npm/caniuse-lite@1.0.30001828",
       "dependsOn": []
     },
     {
@@ -14033,7 +14033,7 @@
         "pkg:npm/%40swc/helpers@0.5.23",
         "pkg:npm/babel-plugin-react-compiler@1.0.0",
         "pkg:npm/baseline-browser-mapping@2.11.39",
-        "pkg:npm/caniuse-lite@1.0.30001799",
+        "pkg:npm/caniuse-lite@1.0.30001828",
         "pkg:npm/postcss@8.5.23",
         "pkg:npm/react-dom@19.2.7",
         "pkg:npm/react@19.2.7",
