@@ -213,6 +213,20 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		provByProfile:  map[int64]*provEntry{},
 		taskAgents:     map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1),
 		loginLimit: newLoginLimiter(time.Now), pwdLimit: newLoginLimiter(time.Now)}
+	s.engine.terminalCleanup = func(id string) {
+		if s.taskSandboxes == nil {
+			return
+		}
+		n, err := strconv.ParseInt(id, 10, 64)
+		if err != nil || n <= 0 {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.taskSandboxes.RetireTerminalTask(cleanupCtx, n); err != nil {
+			log.Printf("[sandbox] task %s terminal cleanup deferred for retry: %v", id, err)
+		}
+	}
 	if m != nil && m.pg != nil {
 		s.revocations = m.pg
 	}

@@ -159,6 +159,10 @@ type Engine struct {
 	// readiness reports whether a global LLM provider is configured — the signal behind
 	// Ready()/the llm_configured indicator. Wired once at startup; nil → not ready.
 	readiness func() bool
+	// terminalCleanup is installed by the server. It runs asynchronously after a
+	// persisted terminal transition and must recheck status before retiring a
+	// sandbox, because a task may be revived before the callback runs.
+	terminalCleanup func(string)
 }
 
 type taskRuntime struct {
@@ -458,6 +462,12 @@ func NewEngine(m *Manager) *Engine {
 		execCancel: map[string]context.CancelCauseFunc{}, execCtx: map[string]context.Context{},
 		work: map[int64]*workExecution{}, steerBox: map[int64][]string{},
 		runtimes: map[string]*taskRuntime{}}
+}
+
+func (e *Engine) scheduleTerminalCleanup(taskID string) {
+	if e.terminalCleanup != nil {
+		go e.terminalCleanup(taskID)
+	}
 }
 
 // registerWork records the cancel for the work currently running intentID.
@@ -973,6 +983,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				} else if won {
 					e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
 						Summary: "All goals have been met, the direct-injected intents have finished executing, and the task is over"})
+					e.scheduleTerminalCleanup(t.ID)
 				}
 			}
 			return // the goalless branch never enters planner.Plan
@@ -1023,13 +1034,17 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		case met:
 			log.Printf("[planner] task %s judged all goals met: %s", t.ID, reason)
 			// All goals met → persist the task state as done (the frontend DTO shows this terminal state first).
-			if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {
-				log.Printf("[planner] task %s failed to persist completion: %v", t.ID, err)
+			statusErr := e.m.SetTaskStatus(t.ID, "done")
+			if statusErr != nil {
+				log.Printf("[planner] task %s failed to persist completion: %v", t.ID, statusErr)
 			}
 			// Task judged complete → cancel the running workers at once: whatever their
 			// in-flight intents produce no longer matters. The next worker-loop pass claims
 			// nothing new at the terminal gate; the cancelled ones take the "task completed" branch below and end up stopped (not blocked).
 			e.cancelExec(t.ID, agent.AbortGoalMet)
+			if statusErr == nil {
+				e.scheduleTerminalCleanup(t.ID)
+			}
 		default:
 			log.Printf("[planner] task %s planning finished", t.ID)
 		}

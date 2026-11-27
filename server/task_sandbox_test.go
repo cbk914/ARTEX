@@ -357,3 +357,34 @@ func TestTaskSandboxTerminalCleanupFailureBlocksNewCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTaskSandboxDelayedTerminalCleanupCannotRetireRevivedRun(t *testing.T) {
+	c, store, backend, _ := newSandboxTestController(t)
+	info := agent.RunInfo{TaskID: 7, ExplorationID: 70}
+	ctx := context.Background()
+	if _, err := c.Run(ctx, info, "first"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.rows[7].Status = "done"
+	store.mu.Unlock()
+	if err := c.RetireTerminalTask(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.rows[7].Status = "running"
+	store.mu.Unlock()
+	if _, err := c.Run(ctx, info, "revived"); err != nil {
+		t.Fatal(err)
+	}
+	// Model a terminal callback that was queued for the previous run but only
+	// executes after the task has received a fresh sandbox.
+	if err := c.RetireTerminalTask(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.created[7] != 2 || len(backend.removed) != 1 || backend.removed[0] != "handle-7" || len(backend.ran) != 2 {
+		t.Fatalf("late terminal cleanup removed a live run: created=%v removed=%v ran=%v", backend.created, backend.removed, backend.ran)
+	}
+}

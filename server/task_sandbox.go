@@ -178,40 +178,55 @@ func (c *taskSandboxController) operate(ctx context.Context, info agent.RunInfo,
 // and prevents a new creation with uncertain ownership.
 func (c *taskSandboxController) retireTerminal(ctx context.Context, except int64) error {
 	c.mu.Lock()
-	entries := make(map[int64]*taskSandboxEntry, len(c.entries))
-	for id, entry := range c.entries {
+	ids := make([]int64, 0, len(c.entries))
+	for id := range c.entries {
 		if id != except {
-			entries[id] = entry
+			ids = append(ids, id)
 		}
 	}
 	c.mu.Unlock()
-	for id, entry := range entries {
-		entry.mu.Lock()
-		if entry.closed || entry.handle == "" {
-			entry.mu.Unlock()
-			continue
+	for _, id := range ids {
+		if err := c.RetireTerminalTask(ctx, id); err != nil {
+			return err
 		}
-		row, err := c.store.GetTask(id)
-		if err != nil {
-			entry.mu.Unlock()
-			return fmt.Errorf("check task sandbox retirement: %w", err)
-		}
-		if row != nil && row.ExplorationID == entry.expID && !db.IsTerminal(row.Status) {
-			entry.mu.Unlock()
-			continue
-		}
-		if err := c.broker.Remove(ctx, entry.handle); err != nil {
-			entry.mu.Unlock()
-			return fmt.Errorf("retire terminal task sandbox: %w", err)
-		}
-		entry.closed = true
-		c.mu.Lock()
-		if c.entries[id] == entry {
-			delete(c.entries, id)
-		}
-		c.mu.Unlock()
-		entry.mu.Unlock()
 	}
+	return nil
+}
+
+// RetireTerminalTask removes only the handle observed for a terminal, deleted
+// or exploration-changed task. A delayed terminal callback cannot remove a
+// freshly created sandbox after the task has been revived.
+func (c *taskSandboxController) RetireTerminalTask(ctx context.Context, id int64) error {
+	if c == nil || id <= 0 {
+		return errors.New("invalid terminal task sandbox retirement")
+	}
+	c.mu.Lock()
+	entry := c.entries[id]
+	c.mu.Unlock()
+	if entry == nil {
+		return nil
+	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if entry.closed || entry.handle == "" {
+		return nil
+	}
+	row, err := c.store.GetTask(id)
+	if err != nil {
+		return fmt.Errorf("check task sandbox retirement: %w", err)
+	}
+	if row != nil && row.ExplorationID == entry.expID && !db.IsTerminal(row.Status) {
+		return nil
+	}
+	if err := c.broker.Remove(ctx, entry.handle); err != nil {
+		return fmt.Errorf("retire terminal task sandbox: %w", err)
+	}
+	entry.closed = true
+	c.mu.Lock()
+	if c.entries[id] == entry {
+		delete(c.entries, id)
+	}
+	c.mu.Unlock()
 	return nil
 }
 
