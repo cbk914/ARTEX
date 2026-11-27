@@ -84,11 +84,14 @@ restore and metadata deletion transactions. Extracted traffic manifests and
 blobs have rooted, bounded reads; imported blobs are hashed before installation
 and existing destinations must match their hashes. Cancellation is still
 cooperative: filesystem renames, JSON decoding and some metadata operations can
-run beyond the exact instant of the deadline. The traffic destination bucket is
-still created by path and requires an external write boundary before it can be
-trusted against a local actor able to replace directories. Cross-store generation consistency
-remains open. Older
-legacy files above 64 MiB need a reviewed migration path.
+run beyond the exact instant of the deadline. The traffic destination bucket
+now opens beneath the traffic store's `os.Root`; directory components are
+checked before the bucket descriptor is retained, and temporary creation and
+rename use that descriptor. A synthetic outside symlink is rejected. A local
+actor that can mutate the store can still race or corrupt files inside the
+root, so a separate write boundary remains necessary. Cross-store generation
+consistency remains open. Older legacy files above 64 MiB need a reviewed
+migration path.
 
 ## Required implementation
 

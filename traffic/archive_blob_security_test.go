@@ -68,6 +68,23 @@ func TestImportArchiveBudgetRejectsOversizeAndSymlinkedBlob(t *testing.T) {
 	if _, err := store.ImportArchiveBudget(context.Background(), archiveDir, 1<<20, 1<<20); err == nil {
 		t.Fatal("import accepted a corrupt existing blob")
 	}
+	if err := os.Remove(destination); err != nil {
+		t.Fatal(err)
+	}
+	bucket := filepath.Dir(destination)
+	if err := os.Remove(bucket); err != nil {
+		t.Fatal(err)
+	}
+	outsideBucket := t.TempDir()
+	if err := os.Symlink(outsideBucket, bucket); err != nil {
+		t.Skipf("destination symlink fixture unavailable: %v", err)
+	}
+	if _, err := store.ImportArchiveBudget(context.Background(), archiveDir, 1<<20, 1<<20); err == nil {
+		t.Fatal("import followed a symlinked destination bucket")
+	}
+	if _, err := os.Lstat(filepath.Join(outsideBucket, hash+".bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restore wrote outside traffic store: %v", err)
+	}
 }
 
 func TestExportHostsManifestBudgetPreservesPriorSnapshot(t *testing.T) {

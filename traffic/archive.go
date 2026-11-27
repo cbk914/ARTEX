@@ -2,6 +2,7 @@ package traffic
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -353,37 +354,80 @@ func (t *Traffic) copyImportedArchiveBlob(ctx context.Context, root *os.Root, ha
 	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(selected, opened) || opened.Size() != selected.Size() {
 		return errors.New("archived traffic blob changed at open")
 	}
-	bucket := filepath.Join(t.dir, "_blobs", "sha256", hash[:2])
-	if err := os.MkdirAll(bucket, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(bucket, 0o700); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(bucket, ".restore-*")
+	storeRoot, err := os.OpenRoot(t.dir)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(temporary.Name())
+	defer storeRoot.Close()
+	var bucketPath string
+	for _, component := range []string{"_blobs", "sha256", hash[:2]} {
+		bucketPath = filepath.Join(bucketPath, component)
+		info, err := storeRoot.Lstat(bucketPath)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := storeRoot.Mkdir(bucketPath, 0o700); err != nil {
+				return err
+			}
+			info, err = storeRoot.Lstat(bucketPath)
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return errors.New("traffic blob directory is unsafe")
+		}
+	}
+	bucketInfo, err := storeRoot.Lstat(bucketPath)
+	if err != nil {
+		return err
+	}
+	bucketRoot, err := storeRoot.OpenRoot(bucketPath)
+	if err != nil {
+		return err
+	}
+	defer bucketRoot.Close()
+	bucketFile, err := bucketRoot.Open(".")
+	if err != nil {
+		return err
+	}
+	openedBucket, statErr := bucketFile.Stat()
+	if statErr != nil || !os.SameFile(bucketInfo, openedBucket) {
+		bucketFile.Close()
+		return errors.New("traffic blob directory changed at open")
+	}
+	chmodErr := bucketFile.Chmod(0o700)
+	closeErr := bucketFile.Close()
+	if err := errors.Join(chmodErr, closeErr); err != nil {
+		return err
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	tempName := ".restore-" + hex.EncodeToString(nonce[:])
+	temporary, err := bucketRoot.OpenFile(tempName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer bucketRoot.Remove(tempName)
 	hasher := sha256.New()
 	n, copyErr := io.Copy(io.MultiWriter(temporary, hasher), archiveReadContext{ctx: ctx, r: io.LimitReader(source, maxBytes+1)})
 	final, statErr := source.Stat()
 	if copyErr == nil {
 		copyErr = temporary.Sync()
 	}
-	closeErr := temporary.Close()
+	closeErr = temporary.Close()
 	if err := errors.Join(copyErr, statErr, closeErr, ctx.Err()); err != nil {
 		return err
 	}
 	if n != selected.Size() || n > maxBytes || !os.SameFile(selected, final) || final.Size() != selected.Size() || !final.ModTime().Equal(selected.ModTime()) || hex.EncodeToString(hasher.Sum(nil)) != hash {
 		return fmt.Errorf("traffic blob checksum or source identity mismatch: %s", hash)
 	}
-	destination := filepath.Join(bucket, hash+".bin")
-	if existing, err := os.Lstat(destination); err == nil {
+	destination := hash + ".bin"
+	if existing, err := bucketRoot.Lstat(destination); err == nil {
 		if !existing.Mode().IsRegular() || existing.Size() != n {
 			return errors.New("existing traffic blob is unsafe")
 		}
-		file, err := os.Open(destination)
+		file, err := bucketRoot.Open(destination)
 		if err != nil {
 			return err
 		}
@@ -394,18 +438,20 @@ func (t *Traffic) copyImportedArchiveBlob(ctx context.Context, root *os.Root, ha
 		}
 		existingHash := sha256.New()
 		_, readErr := io.Copy(existingHash, archiveReadContext{ctx: ctx, r: io.LimitReader(file, maxBytes+1)})
-		closeErr := file.Close()
-		if err := errors.Join(readErr, closeErr, ctx.Err()); err != nil {
+		finalExisting, statErr := file.Stat()
+		if err := errors.Join(readErr, statErr, ctx.Err()); err != nil {
+			file.Close()
 			return err
 		}
-		if hex.EncodeToString(existingHash.Sum(nil)) != hash {
+		if !os.SameFile(existing, finalExisting) || hex.EncodeToString(existingHash.Sum(nil)) != hash {
+			file.Close()
 			return errors.New("existing traffic blob failed integrity check")
 		}
-		return os.Chmod(destination, 0o600)
+		return errors.Join(file.Chmod(0o600), file.Close())
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.Rename(temporary.Name(), destination)
+	return bucketRoot.Rename(tempName, destination)
 }
 
 // ImportArchive imports only missing exchange IDs. Current hot rows always win,
