@@ -423,6 +423,12 @@ func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "target directory does not exist")
 		return
 	}
+	if !s.acquireUploadSlot() {
+		w.Header().Set("Retry-After", "1")
+		writeErr(w, http.StatusTooManyRequests, "too many concurrent uploads; retry shortly")
+		return
+	}
+	defer func() { <-s.uploadSlots }()
 	r.Body = http.MaxBytesReader(w, r.Body, maxWorkspaceUpload)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeErr(w, 400, "failed to parse upload or size limit exceeded: "+err.Error())

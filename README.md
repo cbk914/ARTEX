@@ -593,10 +593,11 @@ Chat, goal decomposition, and side questions are stored on the same task and are
 The per-worker average is not restored (usage rows have no run boundary), so the estimate starts
 from the defaults until a worker finishes in this process.
 
-**Chat upload admission**: `ARTEX_CHAT_UPLOAD_CONCURRENCY` allows 1-16 active multipart chat
-uploads per server process (default 4). A request over the limit receives HTTP 429 with
-`Retry-After: 1` before its multipart body is parsed; the client can retry. Each admitted
-request still has the existing 512 MiB file-data ceiling. This setting does not cap total
+**Upload admission**: `ARTEX_UPLOAD_CONCURRENCY` allows 1-16 active multipart chat and workspace
+uploads combined per server process (default 4). The older `ARTEX_CHAT_UPLOAD_CONCURRENCY`
+remains a fallback when the new setting is absent. A request over the limit receives HTTP 429 with
+`Retry-After: 1` before its multipart body is parsed; the client can retry. Both routes
+retain their existing 512 MiB upload ceilings. This setting does not cap total
 campaign storage or other upload endpoints.
 
 **Common flags**: `./start.sh -addr :8787 -proxy :8788` (`-addr` frontend/API, `-proxy` traffic

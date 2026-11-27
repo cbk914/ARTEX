@@ -28,20 +28,26 @@ const (
 	// Each admitted request may spool up to maxChatUpload plus multipart overhead.
 	// Keep the process-wide parser concurrency bounded even if the operational
 	// setting is misconfigured.
-	defaultChatUploadConcurrency = 4
-	maxChatUploadConcurrency     = 16
+	defaultUploadConcurrency = 4
+	maxUploadConcurrency     = 16
 )
 
-func (s *Server) acquireChatUploadSlot() bool {
-	s.chatUploadOnce.Do(func() {
-		limit := defaultChatUploadConcurrency
-		if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ARTEX_CHAT_UPLOAD_CONCURRENCY"))); err == nil && n >= 1 && n <= maxChatUploadConcurrency {
+// acquireUploadSlot limits all multipart upload parsers in this server process.
+// The old chat-specific setting remains an alias for existing deployments.
+func (s *Server) acquireUploadSlot() bool {
+	s.uploadOnce.Do(func() {
+		limit := defaultUploadConcurrency
+		configured := strings.TrimSpace(os.Getenv("ARTEX_UPLOAD_CONCURRENCY"))
+		if configured == "" {
+			configured = strings.TrimSpace(os.Getenv("ARTEX_CHAT_UPLOAD_CONCURRENCY"))
+		}
+		if n, err := strconv.Atoi(configured); err == nil && n >= 1 && n <= maxUploadConcurrency {
 			limit = n
 		}
-		s.chatUploadSlots = make(chan struct{}, limit)
+		s.uploadSlots = make(chan struct{}, limit)
 	})
 	select {
-	case s.chatUploadSlots <- struct{}{}:
+	case s.uploadSlots <- struct{}{}:
 		return true
 	default:
 		return false
@@ -98,12 +104,12 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid id")
 		return
 	}
-	if !s.acquireChatUploadSlot() {
+	if !s.acquireUploadSlot() {
 		w.Header().Set("Retry-After", "1")
 		writeErr(w, http.StatusTooManyRequests, "too many concurrent uploads; retry shortly")
 		return
 	}
-	defer func() { <-s.chatUploadSlots }()
+	defer func() { <-s.uploadSlots }()
 	base := filepath.Join(s.m.dir, sub, id) // the directory uploads/ goes in
 	if taskScoped {
 		t := s.m.ResolveTask(id)
