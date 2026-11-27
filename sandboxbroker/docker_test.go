@@ -59,7 +59,12 @@ func TestDockerCreateUsesFixedPolicy(t *testing.T) {
 			}
 		}
 	}
-	if args[len(args)-3] != testImage || args[len(args)-2] != "-c" || args[len(args)-1] != "sleep infinity" {
+	for _, entry := range []string{"HOME=/campaign", "TMPDIR=/tmp", "XDG_CONFIG_HOME=/campaign/.config", "XDG_CACHE_HOME=/campaign/.cache", "XDG_DATA_HOME=/campaign/.local/share", "XDG_STATE_HOME=/campaign/.local/state", "XDG_RUNTIME_DIR=/campaign/.run"} {
+		if !contains(args, "--env="+entry) {
+			t.Errorf("missing private environment %s", entry)
+		}
+	}
+	if args[len(args)-3] != testImage || args[len(args)-2] != "-c" || !strings.Contains(args[len(args)-1], "exec sleep infinity") {
 		t.Fatal("unexpected image or command")
 	}
 }
@@ -113,7 +118,7 @@ func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 	spec := Spec{Name: "artex-campaign-" + strings.Repeat("c", 32), Image: testImage, Token: strings.Repeat("d", 64)}
 	base := map[string]any{
 		"Id": id, "Name": "/" + spec.Name, "Image": testImage,
-		"State": map[string]any{"Running": true}, "Config": map[string]any{"User": sandboxUser, "Labels": map[string]string{ownershipLabel: spec.Token}},
+		"State": map[string]any{"Running": true}, "Config": map[string]any{"User": sandboxUser, "Labels": map[string]string{ownershipLabel: spec.Token}, "Env": []string{"HOME=/campaign", "TMPDIR=/tmp", "XDG_CONFIG_HOME=/campaign/.config", "XDG_CACHE_HOME=/campaign/.cache", "XDG_DATA_HOME=/campaign/.local/share", "XDG_STATE_HOME=/campaign/.local/state", "XDG_RUNTIME_DIR=/campaign/.run"}},
 		"HostConfig": map[string]any{"NetworkMode": "none", "ReadonlyRootfs": true, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges:true"}, "Memory": memoryLimit, "MemorySwap": memoryLimit, "PidsLimit": pidLimit, "NanoCpus": nanoCPUs,
 			"Tmpfs": map[string]string{"/tmp": "rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001,mode=0700", "/campaign": "rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700", "/app/data": "rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700", "/app/keys": "rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700"}},
 		"Mounts":          []map[string]string{},
@@ -134,6 +139,13 @@ func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 	r.responses["inspect"] = jsonArray(t, base)
 	if err := d.Verify(context.Background(), id, spec); err == nil {
 		t.Fatal("accepted bridge network")
+	}
+	base["NetworkSettings"] = map[string]any{"Networks": map[string]any{"none": map[string]any{}}}
+	config := base["Config"].(map[string]any)
+	config["Env"] = []string{"HOME=/campaign", "TMPDIR=/tmp", "XDG_CONFIG_HOME=/campaign/.config", "XDG_CACHE_HOME=/shared/.cache", "XDG_DATA_HOME=/campaign/.local/share", "XDG_STATE_HOME=/campaign/.local/state", "XDG_RUNTIME_DIR=/campaign/.run"}
+	r.responses["inspect"] = jsonArray(t, base)
+	if err := d.Verify(context.Background(), id, spec); err == nil {
+		t.Fatal("accepted shared XDG cache")
 	}
 }
 

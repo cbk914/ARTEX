@@ -142,7 +142,7 @@ func TestDockerCampaignIsolationSmoke(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			output, err := broker.Run(ctx, item.handle, "printf %s "+item.marker+" > /campaign/marker; printf %s "+item.marker+" > \"$HOME/home-marker\"; touch /campaign/"+item.name+"-only; id -u")
+			output, err := broker.Run(ctx, item.handle, "printf %s "+item.marker+" > /campaign/marker; printf %s "+item.marker+" > \"$HOME/home-marker\"; for dir in \"$XDG_CONFIG_HOME\" \"$XDG_CACHE_HOME\" \"$XDG_DATA_HOME\" \"$XDG_STATE_HOME\" \"$XDG_RUNTIME_DIR\"; do printf %s "+item.marker+" > \"$dir/marker\" || exit; done; touch /campaign/"+item.name+"-only; id -u")
 			results <- result{item.name, strings.TrimSpace(output), err}
 		}()
 	}
@@ -154,8 +154,8 @@ func TestDockerCampaignIsolationSmoke(t *testing.T) {
 		}
 	}
 	for _, item := range []struct{ handle, own, other string }{{first, "A_PRIVATE", "B"}, {second, "B_PRIVATE", "A"}} {
-		output, err := broker.Run(ctx, item.handle, "cat /campaign/marker; cat \"$HOME/home-marker\"; test ! -e /campaign/"+item.other+"-only")
-		if err != nil || output != item.own+item.own {
+		output, err := broker.Run(ctx, item.handle, "cat /campaign/marker; cat \"$HOME/home-marker\"; for dir in \"$XDG_CONFIG_HOME\" \"$XDG_CACHE_HOME\" \"$XDG_DATA_HOME\" \"$XDG_STATE_HOME\" \"$XDG_RUNTIME_DIR\"; do cat \"$dir/marker\" || exit; done; test ! -e /campaign/"+item.other+"-only")
+		if err != nil || output != strings.Repeat(item.own, 7) {
 			t.Fatalf("cross-campaign marker check: %q %v", output, err)
 		}
 	}
@@ -179,7 +179,7 @@ func TestDockerCampaignIsolationSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	first = newHandle
-	if _, err := broker.Run(ctx, first, "test ! -e /campaign/marker && test ! -e \"$HOME/home-marker\""); err != nil {
+	if _, err := broker.Run(ctx, first, "test ! -e /campaign/marker && test ! -e \"$HOME/home-marker\" && for dir in \"$XDG_CONFIG_HOME\" \"$XDG_CACHE_HOME\" \"$XDG_DATA_HOME\" \"$XDG_STATE_HOME\" \"$XDG_RUNTIME_DIR\"; do test ! -e \"$dir/marker\" || exit; done"); err != nil {
 		t.Fatalf("sequential sandbox reused stale state: %v", err)
 	}
 }

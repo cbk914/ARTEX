@@ -159,7 +159,9 @@ func (d *DockerEngine) Create(ctx context.Context, spec Spec) (string, error) {
 		"--tmpfs=/app/data:rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700",
 		"--tmpfs=/app/keys:rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700",
 		"--env=HOME=/campaign", "--env=TMPDIR=/tmp", "--env=XDG_CONFIG_HOME=/campaign/.config",
-		"--entrypoint=/bin/sh", spec.Image, "-c", "sleep infinity",
+		"--env=XDG_CACHE_HOME=/campaign/.cache", "--env=XDG_DATA_HOME=/campaign/.local/share",
+		"--env=XDG_STATE_HOME=/campaign/.local/state", "--env=XDG_RUNTIME_DIR=/campaign/.run",
+		"--entrypoint=/bin/sh", spec.Image, "-c", "mkdir -p /campaign/.config /campaign/.cache /campaign/.local/share /campaign/.local/state /campaign/.run && chmod 0700 /campaign/.run && exec sleep infinity",
 	}
 	output, err := d.runner.Run(ctx, args...)
 	if err != nil {
@@ -287,6 +289,26 @@ func (d *DockerEngine) Verify(ctx context.Context, id string, spec Spec) error {
 	}
 	if _, onlyNone := info.NetworkSettings.Networks["none"]; !onlyNone {
 		return errors.New("sandbox joined an unapproved network")
+	}
+	env := make(map[string]string, len(info.Config.Env))
+	for _, entry := range info.Config.Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			return errors.New("sandbox has malformed environment")
+		}
+		if _, duplicate := env[key]; duplicate {
+			return fmt.Errorf("sandbox has duplicate environment key %q", key)
+		}
+		env[key] = value
+	}
+	for key, want := range map[string]string{
+		"HOME": "/campaign", "TMPDIR": "/tmp", "XDG_CONFIG_HOME": "/campaign/.config",
+		"XDG_CACHE_HOME": "/campaign/.cache", "XDG_DATA_HOME": "/campaign/.local/share",
+		"XDG_STATE_HOME": "/campaign/.local/state", "XDG_RUNTIME_DIR": "/campaign/.run",
+	} {
+		if env[key] != want {
+			return fmt.Errorf("sandbox environment %s violates private path policy", key)
+		}
 	}
 	if len(h.Tmpfs) != 4 {
 		return errors.New("sandbox tmpfs policy differs")
