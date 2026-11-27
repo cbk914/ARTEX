@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,15 +32,58 @@ type commandRunner interface {
 
 type cliRunner struct{ path string }
 
+const maxDockerOutput = 1 << 20
+
+var errDockerOutputLimit = errors.New("docker command output exceeds 1 MiB")
+
+type boundedOutput struct {
+	mu       sync.Mutex
+	data     []byte
+	exceeded bool
+	kill     func()
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(p) > maxDockerOutput-len(b.data) {
+		b.exceeded = true
+		if b.kill != nil {
+			b.kill()
+		}
+		return 0, errDockerOutputLimit
+	}
+	b.data = append(b.data, p...)
+	return len(p), nil
+}
+
+func (b *boundedOutput) result() ([]byte, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.data...), b.exceeded
+}
+
 func (r cliRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
-	output, err := exec.CommandContext(ctx, r.path, args...).CombinedOutput()
-	if len(output) > 1<<20 {
-		output = output[:1<<20]
+	cmd := exec.CommandContext(ctx, r.path, args...)
+	output := &boundedOutput{kill: func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}}
+	cmd.Stdout, cmd.Stderr = output, output
+	err := cmd.Run()
+	data, exceeded := output.result()
+	if exceeded {
+		return data, errDockerOutputLimit
 	}
 	if err != nil {
-		return nil, fmt.Errorf("docker command failed: %w: %s", err, strings.TrimSpace(string(output)))
+		message := data
+		if len(message) > 4096 {
+			message = message[:4096]
+		}
+		return data, fmt.Errorf("docker command failed: %w: %s", err, strings.TrimSpace(string(message)))
 	}
-	return output, nil
+	return data, nil
 }
 
 // DockerEngine controls disposable containers from a trusted host process.
@@ -157,6 +201,14 @@ func (d *DockerEngine) Start(ctx context.Context, id string) error {
 	}
 	_, err := d.runner.Run(ctx, "start", id)
 	return err
+}
+
+func (d *DockerEngine) Exec(ctx context.Context, id, command string) (string, error) {
+	if !containerID.MatchString(id) || command == "" || len(command) > 64<<10 || strings.IndexByte(command, 0) >= 0 {
+		return "", errors.New("invalid sandbox execution request")
+	}
+	output, err := d.runner.Run(ctx, "exec", id, "/bin/sh", "-c", command)
+	return string(output), err
 }
 
 type containerInfo struct {

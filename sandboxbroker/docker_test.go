@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -133,5 +134,33 @@ func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 	r.responses["inspect"] = jsonArray(t, base)
 	if err := d.Verify(context.Background(), id, spec); err == nil {
 		t.Fatal("accepted bridge network")
+	}
+}
+
+func TestDockerExecKeepsCommandAfterContainerID(t *testing.T) {
+	id := strings.Repeat("e", 64)
+	r := &recordingRunner{responses: map[string][]byte{"exec": []byte("ok")}}
+	d := &DockerEngine{runner: r}
+	command := "--privileged; echo hello"
+	out, err := d.Exec(context.Background(), id, command)
+	if err != nil || out != "ok" {
+		t.Fatalf("exec=%q %v", out, err)
+	}
+	if !reflect.DeepEqual(r.calls[0], []string{"exec", id, "/bin/sh", "-c", command}) {
+		t.Fatalf("unexpected Docker arguments: %v", r.calls[0])
+	}
+}
+
+func TestDockerOutputIsBoundedBeforeAllocation(t *testing.T) {
+	output := &boundedOutput{}
+	if n, err := output.Write(make([]byte, maxDockerOutput)); err != nil || n != maxDockerOutput {
+		t.Fatalf("within limit: %d %v", n, err)
+	}
+	if n, err := output.Write([]byte("more")); !errors.Is(err, errDockerOutputLimit) || n != 0 {
+		t.Fatalf("over limit: %d %v", n, err)
+	}
+	data, exceeded := output.result()
+	if !exceeded || len(data) != maxDockerOutput {
+		t.Fatalf("output grew past cap: %d, exceeded=%v", len(data), exceeded)
 	}
 }

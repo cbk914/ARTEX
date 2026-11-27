@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,18 +24,22 @@ type Engine interface {
 	Create(context.Context, Spec) (string, error)
 	Start(context.Context, string) error
 	Verify(context.Context, string, Spec) error
+	Exec(context.Context, string, string) (string, error)
 	Remove(context.Context, string) error
 }
 
 type sandbox struct {
 	campaignID int64
 	container  string
+	spec       Spec
+	opMu       sync.Mutex
+	poisoned   bool
 }
 type Broker struct {
 	engine     Engine
 	image      string
 	mu         sync.Mutex
-	byHandle   map[string]sandbox
+	byHandle   map[string]*sandbox
 	byCampaign map[int64]string
 }
 
@@ -42,7 +47,7 @@ func New(engine Engine, image string) (*Broker, error) {
 	if engine == nil || !pinnedImage.MatchString(image) {
 		return nil, errors.New("sandbox broker requires an engine and pinned image digest")
 	}
-	return &Broker{engine: engine, image: image, byHandle: make(map[string]sandbox), byCampaign: make(map[int64]string)}, nil
+	return &Broker{engine: engine, image: image, byHandle: make(map[string]*sandbox), byCampaign: make(map[int64]string)}, nil
 }
 
 func randomHex(n int) (string, error) {
@@ -102,7 +107,7 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	b.byHandle[handle] = sandbox{campaignID: campaignID, container: container}
+	b.byHandle[handle] = &sandbox{campaignID: campaignID, container: container, spec: spec}
 	b.byCampaign[campaignID] = handle
 	committed = true
 	return handle, nil
@@ -110,16 +115,79 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 
 // Remove destroys the ephemeral sandbox associated with an opaque handle.
 func (b *Broker) Remove(ctx context.Context, handle string) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	s, exists := b.byHandle[handle]
-	if !exists {
-		return errors.New("unknown sandbox handle")
+	s, err := b.lockSandbox(handle)
+	if err != nil {
+		return err
 	}
+	defer s.opMu.Unlock()
 	if err := b.engine.Remove(ctx, s.container); err != nil {
+		s.poisoned = true
 		return fmt.Errorf("remove sandbox: %w", err)
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	delete(b.byHandle, handle)
 	delete(b.byCampaign, s.campaignID)
 	return nil
+}
+
+func (b *Broker) lockSandbox(handle string) (*sandbox, error) {
+	b.mu.Lock()
+	s := b.byHandle[handle]
+	b.mu.Unlock()
+	if s == nil {
+		return nil, errors.New("unknown sandbox handle")
+	}
+	s.opMu.Lock()
+	b.mu.Lock()
+	valid := b.byHandle[handle] == s
+	b.mu.Unlock()
+	if !valid {
+		s.opMu.Unlock()
+		return nil, errors.New("unknown sandbox handle")
+	}
+	return s, nil
+}
+
+// retireLocked removes an unsafe sandbox. The caller must hold its operation lock.
+func (b *Broker) retireLocked(handle string, s *sandbox) error {
+	s.poisoned = true
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := b.engine.Remove(cleanupCtx, s.container); err != nil {
+		return fmt.Errorf("retire unsafe sandbox: %w", err)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.byHandle[handle] == s {
+		delete(b.byHandle, handle)
+		delete(b.byCampaign, s.campaignID)
+	}
+	return nil
+}
+
+// Run executes a bounded shell command through an opaque handle. The caller must
+// first authorize the campaign; this in-memory prototype has no server API.
+func (b *Broker) Run(ctx context.Context, handle, command string) (string, error) {
+	if command == "" || len(command) > 64<<10 || strings.IndexByte(command, 0) >= 0 {
+		return "", errors.New("invalid sandbox command")
+	}
+	s, err := b.lockSandbox(handle)
+	if err != nil {
+		return "", err
+	}
+	defer s.opMu.Unlock()
+	if s.poisoned {
+		return "", errors.New("sandbox is unsafe and requires removal")
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := b.engine.Verify(runCtx, s.container, s.spec); err != nil {
+		return "", errors.Join(fmt.Errorf("verify sandbox before command: %w", err), b.retireLocked(handle, s))
+	}
+	output, err := b.engine.Exec(runCtx, s.container, command)
+	if runCtx.Err() != nil || errors.Is(err, errDockerOutputLimit) {
+		return output, errors.Join(err, runCtx.Err(), b.retireLocked(handle, s))
+	}
+	return output, err
 }

@@ -109,7 +109,7 @@ func TestDockerCampaignIsolationSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	first, err := broker.Create(ctx, 1)
 	if err != nil {
@@ -132,19 +132,18 @@ func TestDockerCampaignIsolationSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := broker.byHandle[first].container
-	b := broker.byHandle[second].container
 	type result struct {
 		name, output string
 		err          error
 	}
 	results := make(chan result, 2)
 	var wg sync.WaitGroup
-	for _, item := range []struct{ name, id, marker string }{{"A", a, "A_PRIVATE"}, {"B", b, "B_PRIVATE"}} {
+	for _, item := range []struct{ name, handle, marker string }{{"A", first, "A_PRIVATE"}, {"B", second, "B_PRIVATE"}} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			output, err := engine.runner.Run(ctx, "exec", item.id, "/bin/sh", "-c", "printf %s "+item.marker+" > /campaign/marker; printf %s "+item.marker+" > \"$HOME/home-marker\"; touch /campaign/"+item.name+"-only; id -u")
-			results <- result{item.name, strings.TrimSpace(string(output)), err}
+			output, err := broker.Run(ctx, item.handle, "printf %s "+item.marker+" > /campaign/marker; printf %s "+item.marker+" > \"$HOME/home-marker\"; touch /campaign/"+item.name+"-only; id -u")
+			results <- result{item.name, strings.TrimSpace(output), err}
 		}()
 	}
 	wg.Wait()
@@ -154,9 +153,9 @@ func TestDockerCampaignIsolationSmoke(t *testing.T) {
 			t.Fatalf("sandbox %s identity/write: %q %v", got.name, got.output, got.err)
 		}
 	}
-	for _, item := range []struct{ id, own, other string }{{a, "A_PRIVATE", "B"}, {b, "B_PRIVATE", "A"}} {
-		output, err := engine.runner.Run(ctx, "exec", item.id, "/bin/sh", "-c", "cat /campaign/marker; cat \"$HOME/home-marker\"; test ! -e /campaign/"+item.other+"-only")
-		if err != nil || string(output) != item.own+item.own {
+	for _, item := range []struct{ handle, own, other string }{{first, "A_PRIVATE", "B"}, {second, "B_PRIVATE", "A"}} {
+		output, err := broker.Run(ctx, item.handle, "cat /campaign/marker; cat \"$HOME/home-marker\"; test ! -e /campaign/"+item.other+"-only")
+		if err != nil || output != item.own+item.own {
 			t.Fatalf("cross-campaign marker check: %q %v", output, err)
 		}
 	}
@@ -168,7 +167,7 @@ func TestDockerCampaignIsolationSmoke(t *testing.T) {
 	if err != nil || pid <= 1 {
 		t.Fatalf("invalid sandbox host PID %q: %v", pidText, err)
 	}
-	if _, err := engine.runner.Run(ctx, "exec", b, "/bin/sh", "-c", "kill -0 "+strconv.Itoa(pid)); err == nil {
+	if _, err := broker.Run(ctx, second, "kill -0 "+strconv.Itoa(pid)); err == nil {
 		t.Fatal("campaign B can signal campaign A host PID")
 	}
 	if err := broker.Remove(ctx, first); err != nil {
@@ -180,8 +179,53 @@ func TestDockerCampaignIsolationSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	first = newHandle
-	newID := broker.byHandle[first].container
-	if _, err := engine.runner.Run(ctx, "exec", newID, "/bin/sh", "-c", "test ! -e /campaign/marker && test ! -e \"$HOME/home-marker\""); err != nil {
+	if _, err := broker.Run(ctx, first, "test ! -e /campaign/marker && test ! -e \"$HOME/home-marker\""); err != nil {
 		t.Fatalf("sequential sandbox reused stale state: %v", err)
+	}
+}
+
+func TestDockerRunCancellationRetiresSandbox(t *testing.T) {
+	image := os.Getenv("ARTEX_SANDBOX_BROKER_SMOKE_IMAGE")
+	if image == "" {
+		t.Skip("set ARTEX_SANDBOX_BROKER_SMOKE_IMAGE to run Docker smoke test")
+	}
+	path, err := exec.LookPath("docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := NewDockerEngine(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker, err := New(engine, image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	handle, err := broker.Create(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := broker.byHandle[handle].container
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		if _, err := engine.runner.Run(cleanupCtx, "inspect", id); err == nil {
+			if err := engine.Remove(cleanupCtx, id); err != nil {
+				t.Errorf("cleanup cancelled sandbox: %v", err)
+			}
+		}
+	})
+	runCtx, runCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer runCancel()
+	if _, err := broker.Run(runCtx, handle, "sleep 30"); err == nil {
+		t.Fatal("cancelled command succeeded")
+	}
+	if _, exists := broker.byHandle[handle]; exists {
+		t.Fatal("cancelled handle remained active")
+	}
+	if _, err := engine.runner.Run(ctx, "inspect", id); err == nil {
+		t.Fatal("cancelled sandbox container still exists")
 	}
 }
