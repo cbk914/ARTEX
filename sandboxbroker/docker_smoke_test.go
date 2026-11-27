@@ -136,6 +136,18 @@ func TestDockerCampaignIsolationSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := broker.byHandle[first].container
+	if _, err := broker.Run(ctx, first, "test -r /artifacts && test ! -w /artifacts && ! touch /artifacts/forbidden 2>/dev/null"); err != nil {
+		t.Fatalf("executor can write artifacts directory: %v", err)
+	}
+	if _, err := engine.runner.Run(ctx, "exec", "--user=0:0", a, "sh", "-c", "printf %s TRUSTED > /artifacts/fixture && chmod 0444 /artifacts/fixture"); err != nil {
+		t.Fatalf("seed synthetic trusted artifact: %v", err)
+	}
+	if out, err := broker.Run(ctx, first, "cat /artifacts/fixture && test ! -w /artifacts/fixture && ! mv /artifacts/fixture /artifacts/replaced 2>/dev/null"); err != nil || out != "TRUSTED" {
+		t.Fatalf("executor artifact read-only check: %q %v", out, err)
+	}
+	if _, err := broker.Run(ctx, second, "test ! -e /artifacts/fixture"); err != nil {
+		t.Fatalf("other campaign can see artifact: %v", err)
+	}
 	type result struct {
 		name, output string
 		err          error

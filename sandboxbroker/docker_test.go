@@ -41,7 +41,7 @@ func TestDockerCreateUsesFixedPolicy(t *testing.T) {
 		t.Fatalf("create: %q %v", got, err)
 	}
 	args := r.calls[0]
-	for _, flag := range []string{"--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true", "--user=10001:10001", "--memory=256m", "--memory-swap=256m", "--cpus=0.5", "--pids-limit=64", "--label=" + ownershipLabel + "=" + spec.Token, "--label=" + ownerLabel + "=" + spec.Owner} {
+	for _, flag := range []string{"--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true", "--user=10001:10001", "--memory=256m", "--memory-swap=256m", "--cpus=0.5", "--pids-limit=64", "--tmpfs=/artifacts:rw,nosuid,nodev,noexec,size=64m,uid=0,gid=0,mode=0755", "--label=" + ownershipLabel + "=" + spec.Token, "--label=" + ownerLabel + "=" + spec.Owner} {
 		found := false
 		for _, arg := range args {
 			if arg == flag {
@@ -121,7 +121,7 @@ func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 		"Id": id, "Name": "/" + spec.Name, "Image": testImage,
 		"State": map[string]any{"Running": true}, "Config": map[string]any{"User": sandboxUser, "Labels": map[string]string{ownershipLabel: spec.Token, ownerLabel: spec.Owner}, "Env": []string{"HOME=/campaign", "TMPDIR=/tmp", "XDG_CONFIG_HOME=/campaign/.config", "XDG_CACHE_HOME=/campaign/.cache", "XDG_DATA_HOME=/campaign/.local/share", "XDG_STATE_HOME=/campaign/.local/state", "XDG_RUNTIME_DIR=/campaign/.run"}},
 		"HostConfig": map[string]any{"NetworkMode": "none", "ReadonlyRootfs": true, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges:true"}, "Memory": memoryLimit, "MemorySwap": memoryLimit, "PidsLimit": pidLimit, "NanoCpus": nanoCPUs,
-			"Tmpfs": map[string]string{"/tmp": "rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001,mode=0700", "/campaign": "rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700", "/app/data": "rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700", "/app/keys": "rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700"}},
+			"Tmpfs": map[string]string{"/tmp": "rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001,mode=0700", "/campaign": "rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700", "/artifacts": "rw,nosuid,nodev,noexec,size=64m,uid=0,gid=0,mode=0755", "/app/data": "rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700", "/app/keys": "rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700"}},
 		"Mounts":          []map[string]string{},
 		"NetworkSettings": map[string]any{"Networks": map[string]any{"none": map[string]any{}}},
 	}
@@ -130,6 +130,13 @@ func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 	if err := d.Verify(context.Background(), id, spec); err != nil {
 		t.Fatalf("valid policy rejected: %v", err)
 	}
+	tmpfs := base["HostConfig"].(map[string]any)["Tmpfs"].(map[string]string)
+	tmpfs["/artifacts"] = "rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001,mode=0755"
+	r.responses["inspect"] = jsonArray(t, base)
+	if err := d.Verify(context.Background(), id, spec); err == nil {
+		t.Fatal("accepted executor-owned artifacts directory")
+	}
+	tmpfs["/artifacts"] = "rw,nosuid,nodev,noexec,size=64m,uid=0,gid=0,mode=0755"
 	labels := base["Config"].(map[string]any)["Labels"].(map[string]string)
 	labels[ownerLabel] = strings.Repeat("e", 32)
 	r.responses["inspect"] = jsonArray(t, base)

@@ -158,6 +158,7 @@ func (d *DockerEngine) Create(ctx context.Context, spec Spec) (string, error) {
 		"--ulimit=nofile=1024:1024",
 		"--tmpfs=/tmp:rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001,mode=0700",
 		"--tmpfs=/campaign:rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700",
+		"--tmpfs=/artifacts:rw,nosuid,nodev,noexec,size=64m,uid=0,gid=0,mode=0755",
 		"--tmpfs=/app/data:rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700",
 		"--tmpfs=/app/keys:rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700",
 		"--env=HOME=/campaign", "--env=TMPDIR=/tmp", "--env=XDG_CONFIG_HOME=/campaign/.config",
@@ -335,7 +336,7 @@ func (d *DockerEngine) verify(ctx context.Context, id string, spec Spec, require
 			return fmt.Errorf("sandbox environment %s violates private path policy", key)
 		}
 	}
-	if len(h.Tmpfs) != 4 {
+	if len(h.Tmpfs) != 5 {
 		return errors.New("sandbox tmpfs policy differs")
 	}
 	for path, size := range map[string]string{"/tmp": "size=64m", "/campaign": "size=128m", "/app/data": "size=1m", "/app/keys": "size=1m"} {
@@ -349,8 +350,17 @@ func (d *DockerEngine) verify(ctx context.Context, id string, spec Spec, require
 			}
 		}
 	}
+	artifactOptions, ok := h.Tmpfs["/artifacts"]
+	if !ok {
+		return errors.New("missing sandbox artifacts tmpfs")
+	}
+	for _, required := range []string{"rw", "nosuid", "nodev", "noexec", "size=64m", "uid=0", "gid=0", "mode=0755"} {
+		if !contains(strings.Split(artifactOptions, ","), required) {
+			return fmt.Errorf("sandbox artifacts tmpfs lacks %q", required)
+		}
+	}
 	for _, mount := range info.Mounts {
-		if mount.Type != "tmpfs" || (mount.Destination != "/tmp" && mount.Destination != "/campaign" && mount.Destination != "/app/data" && mount.Destination != "/app/keys") {
+		if mount.Type != "tmpfs" || (mount.Destination != "/tmp" && mount.Destination != "/campaign" && mount.Destination != "/artifacts" && mount.Destination != "/app/data" && mount.Destination != "/app/keys") {
 			return fmt.Errorf("unapproved sandbox mount %q (%s)", mount.Destination, mount.Type)
 		}
 	}
