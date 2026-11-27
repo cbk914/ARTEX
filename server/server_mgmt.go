@@ -1565,6 +1565,15 @@ func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { <-s.uploadSlots }()
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+	if err := r.Context().Err(); err != nil {
+		writeErr(w, http.StatusRequestTimeout, "upload cancelled")
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxSkillZipBytes)
 	file, hdr, err := r.FormFile("file")
 	if err != nil {
@@ -1572,9 +1581,17 @@ func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	buf, err := io.ReadAll(file)
+	buf, err := io.ReadAll(archiveContextReader{ctx: r.Context(), r: file})
 	if err != nil {
-		writeErr(w, 400, err.Error())
+		if r.Context().Err() != nil {
+			writeErr(w, http.StatusRequestTimeout, "upload cancelled")
+		} else {
+			writeErr(w, 400, err.Error())
+		}
+		return
+	}
+	if err := r.Context().Err(); err != nil {
+		writeErr(w, http.StatusRequestTimeout, "upload cancelled")
 		return
 	}
 	zr, err := newSkillZipReader(buf)
@@ -1611,9 +1628,13 @@ func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// derive + validate the skill name from the SKILL.md frontmatter.
-	md, err := readZipEntry(skillMD.f)
+	md, err := readZipEntryContext(r.Context(), skillMD.f)
 	if err != nil {
-		writeErr(w, 400, "failed to read SKILL.md: "+err.Error())
+		if r.Context().Err() != nil {
+			writeErr(w, http.StatusRequestTimeout, "upload cancelled")
+		} else {
+			writeErr(w, 400, "failed to read SKILL.md: "+err.Error())
+		}
 		return
 	}
 	name := skillNameFromFrontmatter(md)
@@ -1655,6 +1676,10 @@ func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
 	var total int64
 	entries := 0
 	for _, e := range entriesAll {
+		if r.Context().Err() != nil {
+			writeErr(w, http.StatusRequestTimeout, "upload cancelled")
+			return
+		}
 		f := e.f
 		// only files under the skill root; skip anything outside it.
 		if prefix != "" && !strings.HasPrefix(e.name, prefix) {
@@ -1677,6 +1702,11 @@ func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "file too large: "+rel)
 			return
 		}
+		remaining := maxSkillTotalBytes - total
+		if remaining < 0 || f.UncompressedSize64 > uint64(remaining) {
+			writeErr(w, 400, "archive too large after extraction")
+			return
+		}
 		dst := filepath.Join(tmp, clean)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			writeErr(w, 500, err.Error())
@@ -1693,21 +1723,28 @@ func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
-		n, err := io.Copy(out, io.LimitReader(rc, maxSkillFileBytes+1))
-		out.Close()
-		rc.Close()
+		n, err := io.Copy(out, archiveContextReader{ctx: r.Context(), r: io.LimitReader(rc, min(int64(maxSkillFileBytes), remaining)+1)})
+		err = errors.Join(err, out.Close(), rc.Close(), r.Context().Err())
 		if err != nil {
-			writeErr(w, 500, err.Error())
+			if r.Context().Err() != nil {
+				writeErr(w, http.StatusRequestTimeout, "upload cancelled")
+			} else {
+				writeErr(w, 500, err.Error())
+			}
 			return
 		}
 		total += n
-		if total > maxSkillTotalBytes {
+		if n > maxSkillFileBytes || total > maxSkillTotalBytes {
 			writeErr(w, 400, "archive too large after extraction")
 			return
 		}
 	}
 	if _, err := os.Stat(filepath.Join(tmp, "SKILL.md")); err != nil {
 		writeErr(w, 400, "SKILL.md missing after extraction")
+		return
+	}
+	if r.Context().Err() != nil {
+		writeErr(w, http.StatusRequestTimeout, "upload cancelled")
 		return
 	}
 
@@ -1721,15 +1758,15 @@ func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]any{"name": name, "files": entries})
 }
 
-// readZipEntry reads a single entry's bytes (capped). Takes the *zip.File rather than
-// a name because zr.Open rejects names that aren't valid UTF-8 (GBK-named archives).
-func readZipEntry(f *zip.File) ([]byte, error) {
+// readZipEntryContext reads a single entry's bytes (capped and cancellable).
+// It takes the *zip.File because zr.Open rejects non-UTF-8 GBK entry names.
+func readZipEntryContext(ctx context.Context, f *zip.File) ([]byte, error) {
 	rc, err := f.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(io.LimitReader(rc, maxSkillFileBytes))
+	return io.ReadAll(archiveContextReader{ctx: ctx, r: io.LimitReader(rc, maxSkillFileBytes)})
 }
 
 func (s *Server) fsDeleteSkill(w http.ResponseWriter, r *http.Request) {
