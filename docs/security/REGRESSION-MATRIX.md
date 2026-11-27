@@ -1,14 +1,14 @@
 # ARTEX-Galactus security regression matrix
 
-The initial baseline had no passing dynamic security regression. ARTEX-011 and ARTEX-012 have failing pre-fix reproducers and passing post-fix checks. ARTEX-002, ARTEX-003 and ARTEX-008 have confirmed partial mitigations; ARTEX-001 and ARTEX-005 have source-confirmed design limitations awaiting dynamic validation. The remaining findings are **PENDING VALIDATION**.
+The initial baseline had no passing dynamic security regression. ARTEX-011 and ARTEX-012 have failing pre-fix reproducers and passing post-fix checks. ARTEX-002, ARTEX-003 and ARTEX-008 have confirmed partial mitigations. ARTEX-001 and ARTEX-005 are dynamically confirmed design limitations awaiting architectural remediation. The remaining findings are **PENDING VALIDATION**.
 
 | ID | Priority | Status | Primary invariant | Required evidence |
 | --- | --- | --- | --- | --- |
-| ARTEX-001 | P0 | CONFIRMED DESIGN LIMITATION; DYNAMIC VALIDATION PENDING | Cross-campaign process and file isolation | Source assigns one executor UID/GID to every run and spill tree. Concurrent and sequential synthetic campaign tests and broker implementation remain open; see ADR 0002. |
+| ARTEX-001 | P0 | CONFIRMED DESIGN LIMITATION; REMEDIATION PENDING | Cross-campaign process and file isolation | The opt-in Linux probe observed A read/write B's private file and signal B's process under the shared executor identity. A broker and denial acceptance tests remain open; see ADR 0002. |
 | ARTEX-002 | P0 | CONFIRMED; PARTIAL MITIGATION | Privileged filesystem confinement | Deterministic parent swaps reached outside sentinels through read, write, mkdir, delete and upload before fixes. Descriptor-confined operations pass focused tests and race checks; explicit allowed roots and atomic replacement remain open. |
 | ARTEX-003 | P0 | CONFIRMED; PARTIAL MITIGATION | Atomic confined uploads | The duplicate-name pre-fix regression failed; focused post-fix concurrency, parent-link, cancellation, quota, malformed-name, 512 MiB boundary and race tests passed. Protected staging and immutable metadata remain open. |
 | ARTEX-004 | P0 | PENDING VALIDATION | Independent default-deny network authorization | Mock authorized, denied and infrastructure destinations through each executor |
-| ARTEX-005 | P0 | CONFIRMED DESIGN LIMITATION; DYNAMIC VALIDATION PENDING | Private HOME, cache, temp and browser state | `prepareExecHome` and `execHomeEnv` use one shared home and cache. Separate HOME/XDG/temp/browser state and cross-campaign tests remain open; see ADR 0002. |
+| ARTEX-005 | P0 | CONFIRMED DESIGN LIMITATION; REMEDIATION PENDING | Private HOME, cache, temp and browser state | The opt-in Linux probe observed B read A's HOME marker on sequential reuse. Separate HOME/XDG/temp/browser state and denial tests remain open; see ADR 0002. |
 | ARTEX-006 | P1 | PENDING VALIDATION | Secure browser sessions | Login, logout, CSRF, stream reconnect, bearer compatibility |
 | ARTEX-007 | P1 | PENDING VALIDATION | Consistent, bounded archive and restore | Concurrent mutation, malformed archive, cancellation, rollback |
 | ARTEX-008 | P1 | CONFIRMED; PARTIAL MITIGATION | Immutable, attributed operator evidence | A pre-fix regression placed evidence in task uploads. New local staging uses a private server store, bounded copy, format check, task/intent metadata and SHA-256 verified delivery. Historical evidence and deployment migration remain open. |
@@ -19,6 +19,8 @@ The initial baseline had no passing dynamic security regression. ARTEX-011 and A
 | ARTEX-013 | P2 | PENDING VALIDATION | Safe Docker Desktop deployment and readiness | Config, build, readiness, migration tests |
 
 For each validated finding add root cause, affected files, remediation, test command and result, residual risk and commit. A skipped check remains skipped.
+
+The diagnostic `server/executor_exposure_probe_linux_test.go` runs only with `go test -tags isolation_probe ./server -run TestSharedExecutorCrossCampaignExposureProbe -count=1 -v` in a disposable root-capable Linux container. It uses synthetic task directories, files and a sleep process. The 2026-11-27 run passed its **exposure** assertions: A read and replaced B's file, B read A's HOME marker after A's process ended, and A signaled B's process. This is evidence of the vulnerability, not a passing security acceptance test. The future campaign broker must replace these assertions with denial checks and add tests for each supported executor path.
 
 ## ARTEX-012 validation and remediation
 
