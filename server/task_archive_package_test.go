@@ -4,14 +4,47 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/artex/agent"
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/klauspost/compress/zstd"
 )
+
+func TestTaskArchivePackageRejectsOverflowSizeBeforeCopy(t *testing.T) {
+	var compressed bytes.Buffer
+	encoder, err := zstd.NewWriter(&compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(encoder)
+	if err := tw.WriteHeader(&tar.Header{Name: "small.txt", Mode: 0o600, Size: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "huge.txt", Mode: 0o600, Size: math.MaxInt64}); err != nil {
+		t.Fatal(err)
+	}
+	// The incomplete body is intentional: extraction must reject the declared
+	// size before attempting to copy it or consuming the rest of the stream.
+	_ = tw.Close()
+	if err := encoder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "oversized.tar.zst")
+	if err := os.WriteFile(path, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractTaskArchivePackage(path, "", t.TempDir()); err == nil || !strings.Contains(err.Error(), "extraction safety limits") {
+		t.Fatalf("oversized header error = %v, want extraction safety limits", err)
+	}
+}
 
 func TestTaskArchivePackageFilesRoundTrip(t *testing.T) {
 	dataDir := t.TempDir()

@@ -717,7 +717,7 @@ func extractTaskArchivePackage(path, expectedSHA, destination string) error {
 			return err
 		}
 	}
-	decoder, err := zstd.NewReader(file)
+	decoder, err := zstd.NewReader(file, zstd.WithDecoderMaxMemory(64<<20))
 	if err != nil {
 		return err
 	}
@@ -737,7 +737,7 @@ func extractTaskArchivePackage(path, expectedSHA, destination string) error {
 			return err
 		}
 		entries++
-		if entries > maxArchiveFiles || header.Size < 0 || total+header.Size > maxArchiveBytes {
+		if entries > maxArchiveFiles || header.Size < 0 || header.Size > maxArchiveBytes-total {
 			return errors.New("task archive exceeds extraction safety limits")
 		}
 		total += header.Size
