@@ -65,6 +65,16 @@ isolation gap. The code review does not prove that a live task can mutate the
 private staging directory after drain, or that an archive currently contains
 inconsistent records. Those require targeted race and integration tests.
 
+Traffic blob export now opens a regular source under the traffic store's
+`os.Root`, checks its identity and size, copies with a configured single-file
+limit, and checks its content-addressed SHA-256 before publication. Historical
+two-level blob paths remain supported. Legacy request/response files are read
+under the same root with a 64 MiB limit in both export and display. A symlinked
+blob, escaping legacy SQLite path or changed content fails instead of entering
+the archive. The export still accumulates SQLite rows and marshals `traffic.json`
+in memory; it has no total snapshot budget or per-job deadline. Older legacy
+files above 64 MiB need a reviewed migration path.
+
 ## Required implementation
 
 1. Add explicit operator-configurable, conservative defaults for compressed

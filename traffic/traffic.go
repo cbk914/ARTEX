@@ -1464,8 +1464,14 @@ FROM exchange_bodies b JOIN exchanges e ON e.id=b.id WHERE b.id=?`, id).
 	if strings.TrimSpace(rel) == "" {
 		return "", "", fmt.Errorf("exchange %s has no body record", id)
 	}
-	rb, _ := os.ReadFile(filepath.Join(t.dir, rel, "request.http"))
-	pb, _ := os.ReadFile(filepath.Join(t.dir, rel, "response.http"))
+	rb, err := t.readLegacyExchangeFile(rel, "request.http")
+	if err != nil {
+		return "", "", err
+	}
+	pb, err := t.readLegacyExchangeFile(rel, "response.http")
+	if err != nil {
+		return "", "", err
+	}
 	return string(rb), string(pb), nil
 }
 

@@ -214,7 +214,11 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	}
 	if s.m.traffic != nil && len(snapshot.Hosts) > 0 {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "snapshot_traffic", 38)
-		trafficCount, err := s.m.traffic.ExportHosts(snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"))
+		budget, err := configuredArchiveBudget()
+		if err != nil {
+			return err
+		}
+		trafficCount, err := s.m.traffic.ExportHostsContext(s.ctx, snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"), budget.file)
 		if err != nil {
 			return err
 		}

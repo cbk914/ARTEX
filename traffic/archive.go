@@ -1,18 +1,37 @@
 package traffic
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 )
+
+const (
+	defaultArchiveBlobLimit = int64(4 << 30)
+	hardArchiveBlobLimit    = int64(32 << 30)
+)
+
+type archiveReadContext struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r archiveReadContext) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
 
 const (
 	archiveVersionV1 = 1
@@ -53,8 +72,20 @@ type ArchiveExchange struct {
 // lock while reading SQLite and blobs, so each body and its index row come from
 // one consistent point in time.
 func (t *Traffic) ExportHosts(hosts []string, dir string) (int64, error) {
+	return t.ExportHostsContext(context.Background(), hosts, dir, defaultArchiveBlobLimit)
+}
+
+// ExportHostsContext bounds each blob before the archive package is built.
+// A changed or symlinked blob fails export rather than copying unintended data.
+func (t *Traffic) ExportHostsContext(ctx context.Context, hosts []string, dir string, maxBlobBytes int64) (int64, error) {
 	if t == nil || len(hosts) == 0 {
 		return 0, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if maxBlobBytes <= 0 || maxBlobBytes > hardArchiveBlobLimit {
+		return 0, errors.New("invalid traffic archive blob limit")
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o700); err != nil {
 		return 0, err
@@ -68,7 +99,7 @@ func (t *Traffic) ExportHosts(hosts []string, dir string) (int64, error) {
 		placeholders[i] = "?"
 		args[i] = host
 	}
-	rows, err := t.db.Query(`SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path
+	rows, err := t.db.QueryContext(ctx, `SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path
 FROM exchanges WHERE host IN (`+strings.Join(placeholders, ",")+`) ORDER BY ts,id`, args...)
 	if err != nil {
 		return 0, err
@@ -77,6 +108,9 @@ FROM exchanges WHERE host IN (`+strings.Join(placeholders, ",")+`) ORDER BY ts,i
 	snapshot := ArchiveSnapshot{Version: archiveVersionV2}
 	blobs := map[string]struct{}{}
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		var item ArchiveExchange
 		var legacyPath string
 		if err := rows.Scan(&item.ID, &item.TS, &item.Host, &item.Method, &item.URLTemplate,
@@ -84,15 +118,15 @@ FROM exchanges WHERE host IN (`+strings.Join(placeholders, ",")+`) ORDER BY ts,i
 			return 0, err
 		}
 		var reqBlob, respBlob sql.NullString
-		err := t.db.QueryRow(`SELECT req_head,req_body,req_blob,resp_head,resp_body,resp_blob
+		err := t.db.QueryRowContext(ctx, `SELECT req_head,req_body,req_blob,resp_head,resp_body,resp_blob
 FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &reqBlob, &item.RespHead, &item.RespBody, &respBlob)
 		if errors.Is(err, sql.ErrNoRows) && strings.TrimSpace(legacyPath) != "" {
-			req, readErr := os.ReadFile(filepath.Join(t.dir, legacyPath, "request.http"))
-			if readErr != nil && !os.IsNotExist(readErr) {
+			req, readErr := t.readLegacyExchangeFile(legacyPath, "request.http")
+			if readErr != nil {
 				return 0, readErr
 			}
-			resp, readErr := os.ReadFile(filepath.Join(t.dir, legacyPath, "response.http"))
-			if readErr != nil && !os.IsNotExist(readErr) {
+			resp, readErr := t.readLegacyExchangeFile(legacyPath, "response.http")
+			if readErr != nil {
 				return 0, readErr
 			}
 			item.ReqHead, item.RespHead = string(req), string(resp)
@@ -128,15 +162,7 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 		}
 		sort.Strings(snapshot.Blobs)
 		for _, hash := range snapshot.Blobs {
-			source, err := t.blobPath(hash)
-			if err != nil {
-				return 0, err
-			}
-			data, err := os.ReadFile(source)
-			if err != nil {
-				return 0, err
-			}
-			if err := os.WriteFile(filepath.Join(dir, "blobs", hash+".bin"), data, 0o600); err != nil {
+			if err := t.copyArchiveBlob(ctx, hash, filepath.Join(dir, "blobs"), maxBlobBytes); err != nil {
 				return 0, err
 			}
 		}
@@ -149,6 +175,71 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 		return 0, err
 	}
 	return int64(len(snapshot.Exchanges)), nil
+}
+
+func (t *Traffic) copyArchiveBlob(ctx context.Context, hash, destinationDir string, maxBytes int64) error {
+	if !blobHashRe.MatchString(hash) {
+		return errors.New("invalid traffic archive blob hash")
+	}
+	root, err := os.OpenRoot(t.dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	var source *os.File
+	var selected os.FileInfo
+	for _, relative := range []string{
+		filepath.Join("_blobs", "sha256", hash[:2], hash+".bin"),
+		filepath.Join("_blobs", "sha256", hash[:2], hash[2:4], hash+".bin"),
+	} {
+		selected, err = root.Lstat(relative)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !selected.Mode().IsRegular() || selected.Size() < 0 || selected.Size() > maxBytes {
+			return errors.New("traffic archive blob is unsafe or exceeds its limit")
+		}
+		source, err = root.Open(relative)
+		if err != nil {
+			return err
+		}
+		opened, statErr := source.Stat()
+		if statErr != nil || !opened.Mode().IsRegular() || !os.SameFile(selected, opened) || opened.Size() != selected.Size() {
+			source.Close()
+			return errors.New("traffic archive blob changed at open")
+		}
+		break
+	}
+	if source == nil {
+		return errors.New("traffic archive blob is missing")
+	}
+	defer source.Close()
+	temporary, err := os.CreateTemp(destinationDir, ".blob-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temporary.Name())
+	hasher := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(temporary, hasher), archiveReadContext{ctx: ctx, r: io.LimitReader(source, maxBytes+1)})
+	final, statErr := source.Stat()
+	if copyErr == nil {
+		copyErr = temporary.Sync()
+	}
+	closeErr := temporary.Close()
+	if err := errors.Join(copyErr, statErr, closeErr, ctx.Err()); err != nil {
+		return err
+	}
+	if n > maxBytes || n != selected.Size() || !os.SameFile(selected, final) || final.Size() != selected.Size() || !final.ModTime().Equal(selected.ModTime()) || hex.EncodeToString(hasher.Sum(nil)) != hash {
+		return errors.New("traffic archive blob changed or failed integrity check")
+	}
+	destination := filepath.Join(destinationDir, hash+".bin")
+	if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(temporary.Name(), destination)
 }
 
 // ImportArchive imports only missing exchange IDs. Current hot rows always win,

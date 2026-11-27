@@ -1,0 +1,124 @@
+package traffic
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestExportHostsRejectsSymlinkedBlob(t *testing.T) {
+	root := t.TempDir()
+	store, err := Open(root, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	content := bytes.Repeat([]byte("synthetic body"), maxInlineBody/len("synthetic body")+2)
+	blob := store.spill(content, "application/octet-stream")
+	if blob.hash == "" {
+		t.Fatal("fixture did not create a blob")
+	}
+	const host = "archive-symlink.example"
+	if _, err := store.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "symlink-exchange", 1, host, "GET", "/", "https://"+host+"/", 200, "application/octet-stream", 0, len(content), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO exchange_bodies(id,req_head,req_body,req_blob,resp_head,resp_body,resp_blob)
+VALUES(?,?,?,?,?,?,?)`, "symlink-exchange", "GET / HTTP/1.1", nil, nil, "HTTP/1.1 200 OK", nil, blob.hash); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "_blobs", "sha256", blob.hash[:2], blob.hash+".bin")
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "outside-secret")
+	if err := os.WriteFile(secret, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, source); err != nil {
+		t.Skipf("symlink fixture unavailable: %v", err)
+	}
+	destination := filepath.Join(t.TempDir(), "archive")
+	if _, err := store.ExportHostsContext(context.Background(), []string{host}, destination, int64(len(content))); err == nil {
+		t.Fatal("export followed a symlink outside the traffic store")
+	}
+	if _, err := os.Lstat(filepath.Join(destination, "traffic.json")); !os.IsNotExist(err) {
+		t.Fatalf("export published traffic manifest after rejection: %v", err)
+	}
+}
+
+func TestArchiveBlobCopyConfinesAndVerifiesSource(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(t.TempDir(), "blobs")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("synthetic private traffic body")
+	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])
+	bucket := filepath.Join(root, "_blobs", "sha256", hash[:2])
+	if err := os.MkdirAll(bucket, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(bucket, hash+".bin")
+	if err := os.WriteFile(source, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := &Traffic{dir: root}
+	if err := store.copyArchiveBlob(context.Background(), hash, destination, int64(len(content))); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(destination, hash+".bin")); err != nil || string(got) != string(content) {
+		t.Fatalf("copied blob=%q err=%v", got, err)
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "outside-secret")
+	if err := os.WriteFile(secret, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, source); err != nil {
+		t.Skipf("symlink fixture unavailable: %v", err)
+	}
+	if err := store.copyArchiveBlob(context.Background(), hash, destination, int64(len(content))); err == nil {
+		t.Fatal("followed symlinked traffic blob outside the store")
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("tampered private traffic body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.copyArchiveBlob(context.Background(), hash, destination, int64(len(content))); err == nil {
+		t.Fatal("accepted content that did not match its blob hash")
+	}
+	if err := os.WriteFile(source, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.copyArchiveBlob(context.Background(), hash, destination, 1); err == nil {
+		t.Fatal("read blob beyond the archive file limit")
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(bucket, hash[2:4], hash+".bin")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.copyArchiveBlob(context.Background(), hash, destination, int64(len(content))); err != nil {
+		t.Fatalf("legacy layout rejected: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := store.copyArchiveBlob(ctx, hash, destination, int64(len(content))); err == nil {
+		t.Fatal("ignored cancellation")
+	}
+}
