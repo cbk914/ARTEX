@@ -61,14 +61,23 @@ func newHTTPHandler(broker *Broker) (http.Handler, error) {
 		defer cancel()
 		output, err := broker.Run(ctx, r.PathValue("handle"), input.Command)
 		if err != nil {
+			var exit *CommandExitError
+			if errors.As(err, &exit) && exit.Code > 0 && exit.Code <= 255 && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, errDockerOutputLimit) {
+				writeBrokerJSON(w, http.StatusOK, struct {
+					Output   string `json:"output"`
+					ExitCode int    `json:"exit_code"`
+				}{output, exit.Code})
+				return
+			}
 			// Command output may contain sensitive target data. Do not expose it
 			// through a generic error response.
 			writeBrokerError(w, http.StatusServiceUnavailable, "sandbox execution failed")
 			return
 		}
 		writeBrokerJSON(w, http.StatusOK, struct {
-			Output string `json:"output"`
-		}{output})
+			Output   string `json:"output"`
+			ExitCode int    `json:"exit_code"`
+		}{output, 0})
 	})
 	mux.HandleFunc("POST /v1/sandboxes/{handle}/run-input", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
@@ -86,12 +95,21 @@ func newHTTPHandler(broker *Broker) (http.Handler, error) {
 		defer cancel()
 		output, err := broker.RunInput(ctx, r.PathValue("handle"), input.Command, input.Input)
 		if err != nil {
+			var exit *CommandExitError
+			if errors.As(err, &exit) && exit.Code > 0 && exit.Code <= 255 && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, errDockerOutputLimit) {
+				writeBrokerJSON(w, http.StatusOK, struct {
+					Output   string `json:"output"`
+					ExitCode int    `json:"exit_code"`
+				}{output, exit.Code})
+				return
+			}
 			writeBrokerError(w, http.StatusServiceUnavailable, "sandbox execution failed")
 			return
 		}
 		writeBrokerJSON(w, http.StatusOK, struct {
-			Output string `json:"output"`
-		}{output})
+			Output   string `json:"output"`
+			ExitCode int    `json:"exit_code"`
+		}{output, 0})
 	})
 	mux.HandleFunc("PUT /v1/sandboxes/{handle}/artifacts/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")

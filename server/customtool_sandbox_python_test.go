@@ -64,6 +64,17 @@ func TestScriptToolSandboxRejectsUnverifiedRun(t *testing.T) {
 	}
 }
 
+func TestScriptToolPreservesSandboxExitOutput(t *testing.T) {
+	controller, _, backend, _ := newSandboxTestController(t)
+	backend.exitCode = 7
+	s := &Server{taskSandboxes: controller}
+	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{TaskID: 7, ExplorationID: 70})
+	result, err := s.runScriptToolWithInterpreter(ctx, "fixture", scriptExec{Code: "raise SystemExit(7)"}, nil, nil, "python3")
+	if err != nil || !strings.Contains(result.Flatten(), "sandbox diagnostic") || !strings.Contains(result.Flatten(), "[exit code 7]") {
+		t.Fatalf("nonzero sandbox script = %q, %v", result.Flatten(), err)
+	}
+}
+
 type localPythonRunner struct{ dir string }
 
 func (r localPythonRunner) RunInput(ctx context.Context, _ agent.RunInfo, command string, input []byte) (string, error) {

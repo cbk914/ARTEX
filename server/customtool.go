@@ -25,6 +25,7 @@ import (
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/notify"
+	"github.com/Autumn-27/artex/sandboxbroker"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -467,6 +468,13 @@ func (s *Server) runCommandTool(ctx context.Context, key string, execRaw json.Ra
 		defer cancel()
 		output, err := s.taskSandboxes.Run(runCtx, runInfo, cmd)
 		if err != nil {
+			var exit *sandboxbroker.CommandExitError
+			if errors.As(err, &exit) {
+				if strings.TrimSpace(output) == "" {
+					output = "(no output)"
+				}
+				return actool.Errorf(fmt.Sprintf("%s\n\n[exit code %d]", actool.Capture(tc, output), exit.Code)), nil
+			}
 			return actool.Errorf("task sandbox command failed: " + err.Error()), nil
 		}
 		return actool.Text(actool.Capture(tc, output)), nil
@@ -513,6 +521,10 @@ func (s *Server) runScriptToolWithInterpreter(ctx context.Context, key string, s
 		}
 		body, err := execPythonSandbox(ctx, s.taskSandboxes, runInfo, interp, spec.Code, params, timeout)
 		if err != nil {
+			var exit *sandboxbroker.CommandExitError
+			if errors.As(err, &exit) {
+				return actool.Text(actool.Capture(tc, body+fmt.Sprintf("\n[exit code %d]", exit.Code))), nil
+			}
 			return actool.Errorf("task sandbox script failed: " + err.Error()), nil
 		}
 		return actool.Text(actool.Capture(tc, body)), nil

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -13,10 +14,12 @@ import (
 )
 
 type recordingRunner struct {
-	calls     [][]string
-	responses map[string][]byte
-	failure   string
-	input     []byte
+	calls      [][]string
+	responses  map[string][]byte
+	failure    string
+	input      []byte
+	exitCode   int
+	omitMarker bool
 }
 
 func (r *recordingRunner) RunInput(ctx context.Context, input io.Reader, args ...string) ([]byte, error) {
@@ -33,7 +36,12 @@ func (r *recordingRunner) Run(_ context.Context, args ...string) ([]byte, error)
 	if args[0] == r.failure {
 		return nil, errors.New("synthetic docker failure")
 	}
-	return r.responses[args[0]], nil
+	output := r.responses[args[0]]
+	if args[0] == "exec" && contains(args, dockerExecWrapper) && !r.omitMarker {
+		marker := args[len(args)-1]
+		output = append(append([]byte(nil), output...), []byte(fmt.Sprintf("\n%s:%d\n", marker, r.exitCode))...)
+	}
+	return output, nil
 }
 func jsonArray(t *testing.T, value any) []byte {
 	t.Helper()
@@ -110,7 +118,7 @@ func TestDockerExecInputUsesSandboxUserAndBoundedStdin(t *testing.T) {
 	if err != nil || output != "stdin" || !reflect.DeepEqual(r.input, input) {
 		t.Fatalf("exec stdin: %q %v input=%v", output, err, r.input)
 	}
-	if len(r.calls) != 1 || !reflect.DeepEqual(r.calls[0], []string{"exec", "-i", "--workdir=/campaign", id, "/bin/sh", "-c", "cat"}) {
+	if len(r.calls) != 1 || !reflect.DeepEqual(r.calls[0][:len(r.calls[0])-1], []string{"exec", "-i", "--workdir=/campaign", id, "/bin/sh", "-c", dockerExecWrapper, "--", "cat"}) {
 		t.Fatalf("unexpected Docker command: %v", r.calls)
 	}
 	if _, err := d.ExecInput(context.Background(), id, "cat", make([]byte, maxBrokerStdinBytes+1)); err == nil || len(r.calls) != 1 {
@@ -256,8 +264,29 @@ func TestDockerExecKeepsCommandAfterContainerID(t *testing.T) {
 	if err != nil || out != "ok" {
 		t.Fatalf("exec=%q %v", out, err)
 	}
-	if !reflect.DeepEqual(r.calls[0], []string{"exec", "--workdir=/campaign", id, "/bin/sh", "-c", command}) {
+	if !reflect.DeepEqual(r.calls[0][:len(r.calls[0])-1], []string{"exec", "--workdir=/campaign", id, "/bin/sh", "-c", dockerExecWrapper, "--", command}) {
 		t.Fatalf("unexpected Docker arguments: %v", r.calls[0])
+	}
+}
+
+func TestDockerExecReturnsCommandOutputOnNonzeroExit(t *testing.T) {
+	id := strings.Repeat("e", 64)
+	r := &recordingRunner{responses: map[string][]byte{"exec": []byte("diagnostic\n")}, exitCode: 7}
+	d := &DockerEngine{runner: r}
+	output, err := d.Exec(context.Background(), id, "echo diagnostic; exit 7")
+	var exit *CommandExitError
+	if output != "diagnostic\n" || !errors.As(err, &exit) || exit.Code != 7 {
+		t.Fatalf("command failure = %q, %v", output, err)
+	}
+}
+
+func TestDockerExecRejectsMissingStatusMarker(t *testing.T) {
+	id := strings.Repeat("e", 64)
+	r := &recordingRunner{responses: map[string][]byte{"exec": []byte("untrusted output")}, omitMarker: true}
+	d := &DockerEngine{runner: r}
+	output, err := d.Exec(context.Background(), id, "true")
+	if err == nil || output != "" {
+		t.Fatalf("missing status marker = %q, %v", output, err)
 	}
 }
 

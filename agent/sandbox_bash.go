@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/sandboxbroker"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -73,6 +75,13 @@ func (t *sandboxBashTool) Call(ctx context.Context, input json.RawMessage, tc *a
 	defer cancel()
 	output, err := t.runner.Run(runCtx, info, in.Command)
 	if err != nil {
+		var exit *sandboxbroker.CommandExitError
+		if errors.As(err, &exit) {
+			if strings.TrimSpace(output) == "" {
+				output = "(no output)"
+			}
+			return actool.Errorf(fmt.Sprintf("%s\n\n[exit code %d]", actool.Capture(tc, output), exit.Code)), nil
+		}
 		return actool.Errorf(fmt.Sprintf("Error: task sandbox command failed: %v", err)), nil
 	}
 	if strings.TrimSpace(output) == "" {

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,7 @@ type cliRunner struct{ path string }
 const maxDockerOutput = 1 << 20
 
 var errDockerOutputLimit = errors.New("docker command output exceeds 1 MiB")
+var errDockerStatusInvalid = errors.New("sandbox command status invalid")
 
 type boundedOutput struct {
 	mu       sync.Mutex
@@ -243,20 +245,55 @@ func (d *DockerEngine) Start(ctx context.Context, id string) error {
 	return err
 }
 
+const dockerExecWrapper = `sh -c "$1"; status=$?; printf '\n%s:%d\n' "$2" "$status"`
+
 func (d *DockerEngine) Exec(ctx context.Context, id, command string) (string, error) {
 	if !containerID.MatchString(id) || command == "" || len(command) > 64<<10 || strings.IndexByte(command, 0) >= 0 {
 		return "", errors.New("invalid sandbox execution request")
 	}
-	output, err := d.runner.Run(ctx, "exec", "--workdir=/campaign", id, "/bin/sh", "-c", command)
-	return string(output), err
+	return d.exec(ctx, id, command, nil)
 }
 
 func (d *DockerEngine) ExecInput(ctx context.Context, id, command string, input []byte) (string, error) {
 	if !containerID.MatchString(id) || command == "" || len(command) > 64<<10 || strings.IndexByte(command, 0) >= 0 || len(input) == 0 || len(input) > maxBrokerStdinBytes {
 		return "", errors.New("invalid sandbox stdin execution request")
 	}
-	output, err := d.runner.RunInput(ctx, bytes.NewReader(input), "exec", "-i", "--workdir=/campaign", id, "/bin/sh", "-c", command)
-	return string(output), err
+	return d.exec(ctx, id, command, input)
+}
+
+func (d *DockerEngine) exec(ctx context.Context, id, command string, input []byte) (string, error) {
+	marker, err := randomHex(16)
+	if err != nil {
+		return "", err
+	}
+	args := []string{"exec"}
+	if input != nil {
+		args = append(args, "-i")
+	}
+	args = append(args, "--workdir=/campaign", id, "/bin/sh", "-c", dockerExecWrapper, "--", command, marker)
+	var output []byte
+	if input == nil {
+		output, err = d.runner.Run(ctx, args...)
+	} else {
+		output, err = d.runner.RunInput(ctx, bytes.NewReader(input), args...)
+	}
+	if err != nil {
+		return string(output), err
+	}
+	markerStart := []byte("\n" + marker + ":")
+	position := bytes.LastIndex(output, markerStart)
+	if position < 0 || len(output) == 0 || output[len(output)-1] != '\n' {
+		return "", errDockerStatusInvalid
+	}
+	code, err := strconv.Atoi(string(output[position+len(markerStart) : len(output)-1]))
+	if err != nil || code < 0 || code > 255 {
+		return "", errDockerStatusInvalid
+	}
+	body := string(output[:position])
+	if code != 0 {
+		return body, &CommandExitError{Code: code}
+	}
+	return body, nil
 }
 
 type containerInfo struct {

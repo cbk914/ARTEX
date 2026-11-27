@@ -205,3 +205,27 @@ func TestBrokerHTTPRunInputPreservesBytesAndRejectsSelectors(t *testing.T) {
 		t.Fatalf("accepted oversized decoded stdin: HTTP %d", got.Code)
 	}
 }
+
+func TestBrokerHTTPSeparatesCommandExitFromTimeout(t *testing.T) {
+	engine := &fakeEngine{failure: "command-exit"}
+	broker, _ := New(engine, testImage)
+	handler, _ := newHTTPHandler(broker)
+	handle, err := broker.Create(context.Background(), 55)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/sandboxes/" + handle + "/run"
+	got := brokerRequest(t, handler, http.MethodPost, path, `{"command":"exit 7"}`)
+	var result struct {
+		Output   string `json:"output"`
+		ExitCode int    `json:"exit_code"`
+	}
+	if got.Code != http.StatusOK || json.Unmarshal(got.Body.Bytes(), &result) != nil || result.Output != "diagnostic\n" || result.ExitCode != 7 {
+		t.Fatalf("command exit response: %d %s", got.Code, got.Body.String())
+	}
+	engine.failure = "command-timeout"
+	got = brokerRequest(t, handler, http.MethodPost, path, `{"command":"exit 7"}`)
+	if got.Code != http.StatusServiceUnavailable || strings.Contains(got.Body.String(), "partial diagnostic") {
+		t.Fatalf("timeout leaked command output: %d %s", got.Code, got.Body.String())
+	}
+}

@@ -2,6 +2,7 @@ package sandboxbroker
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -97,6 +98,51 @@ func TestDockerBrokerSmoke(t *testing.T) {
 	defer cleanupCancel()
 	if err := broker.Remove(cleanupCtx, handle); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDockerCommandExitSmoke(t *testing.T) {
+	image := os.Getenv("ARTEX_SANDBOX_BROKER_SMOKE_IMAGE")
+	if image == "" {
+		t.Skip("set ARTEX_SANDBOX_BROKER_SMOKE_IMAGE to run Docker smoke test")
+	}
+	path, err := exec.LookPath("docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := NewDockerEngine(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker, err := New(engine, image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+	handle, err := broker.Create(ctx, 109)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		if err := broker.Remove(cleanupCtx, handle); err != nil {
+			t.Errorf("remove disposable command sandbox: %v", err)
+		}
+	})
+	output, err := broker.Run(ctx, handle, "printf diagnostic; exit 7")
+	var exit *CommandExitError
+	if output != "diagnostic" || !errors.As(err, &exit) || exit.Code != 7 {
+		t.Fatalf("nonzero command: %q, %v", output, err)
+	}
+	output, err = broker.RunInput(ctx, handle, "cat; exit 9", []byte("stdin"))
+	if output != "stdin" || !errors.As(err, &exit) || exit.Code != 9 {
+		t.Fatalf("nonzero stdin command: %q, %v", output, err)
+	}
+	output, err = broker.Run(ctx, handle, "pwd")
+	if err != nil || strings.TrimSpace(output) != "/campaign" {
+		t.Fatalf("sandbox working directory: %q, %v", output, err)
 	}
 }
 

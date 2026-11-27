@@ -18,6 +18,14 @@ var pinnedImage = regexp.MustCompile(`^(?:[a-zA-Z0-9][a-zA-Z0-9._/:-]*@)?sha256:
 
 type Spec struct{ Name, Image, Token, Owner string }
 
+// CommandExitError reports a completed sandbox command's nonzero exit status.
+// It carries no output or Docker diagnostics; callers receive output separately.
+type CommandExitError struct{ Code int }
+
+func (e *CommandExitError) Error() string {
+	return fmt.Sprintf("sandbox command exited with code %d", e.Code)
+}
+
 // Engine is implemented only by a trusted host-side container controller.
 type Engine interface {
 	CheckImage(context.Context, string) error
@@ -271,7 +279,7 @@ func (b *Broker) run(ctx context.Context, handle, command string, input []byte) 
 	} else {
 		output, err = b.engine.ExecInput(runCtx, s.container, command, input)
 	}
-	if runCtx.Err() != nil || errors.Is(err, errDockerOutputLimit) {
+	if runCtx.Err() != nil || errors.Is(err, errDockerOutputLimit) || errors.Is(err, errDockerStatusInvalid) {
 		return output, errors.Join(err, runCtx.Err(), b.retireLocked(handle, s))
 	}
 	return output, err

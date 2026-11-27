@@ -7,13 +7,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/sandboxbroker"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
 type recordingTaskShell struct {
-	calls int
-	info  RunInfo
-	cmd   string
+	calls    int
+	info     RunInfo
+	cmd      string
+	exitCode int
 }
 
 func (r *recordingTaskShell) Run(ctx context.Context, info RunInfo, command string) (string, error) {
@@ -22,6 +24,9 @@ func (r *recordingTaskShell) Run(ctx context.Context, info RunInfo, command stri
 	r.cmd = command
 	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 31*time.Second {
 		return "", context.DeadlineExceeded
+	}
+	if r.exitCode != 0 {
+		return "sandbox diagnostic\n", &sandboxbroker.CommandExitError{Code: r.exitCode}
 	}
 	return "sandbox output", nil
 }
@@ -75,5 +80,15 @@ func TestTaskBashFailsClosedWithoutIdentityOrUnsupportedMode(t *testing.T) {
 	}
 	if runner.calls != 0 {
 		t.Fatalf("rejected Bash calls reached runner: %d", runner.calls)
+	}
+}
+
+func TestTaskBashPreservesNonzeroOutput(t *testing.T) {
+	runner := &recordingTaskShell{exitCode: 7}
+	bash := &sandboxBashTool{runner: runner}
+	ctx := WithRunInfo(context.Background(), RunInfo{TaskID: 41, ExplorationID: 73})
+	result, err := bash.Call(ctx, json.RawMessage(`{"command":"exit 7"}`), nil)
+	if err != nil || !strings.Contains(result.Flatten(), "sandbox diagnostic") || !strings.Contains(result.Flatten(), "[exit code 7]") {
+		t.Fatalf("nonzero Bash result = %q, %v", result.Flatten(), err)
 	}
 }

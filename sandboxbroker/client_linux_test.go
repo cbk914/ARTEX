@@ -4,6 +4,7 @@ package sandboxbroker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,17 @@ func TestUnixClientRoundTripAndFailClosed(t *testing.T) {
 	if err != nil || output != "ran: cat" || string(engine.lastInput) != string(input) {
 		t.Fatalf("stdin run: %q %v input=%q", output, err, engine.lastInput)
 	}
+	engine.failure = "command-exit"
+	output, err = client.Run(context.Background(), handle, "exit 7")
+	var exit *CommandExitError
+	if output != "diagnostic\n" || !errors.As(err, &exit) || exit.Code != 7 {
+		t.Fatalf("nonzero command result: %q %v", output, err)
+	}
+	output, err = client.RunInput(context.Background(), handle, "exit 7", input)
+	if output != "diagnostic\n" || !errors.As(err, &exit) || exit.Code != 7 {
+		t.Fatalf("nonzero stdin result: %q %v", output, err)
+	}
+	engine.failure = ""
 	digest, err := client.PutArtifact(context.Background(), handle, "fixture.txt", []byte("synthetic"))
 	if err != nil || len(digest) != 64 || engine.delivered != 1 {
 		t.Fatalf("artifact delivery: digest=%q delivered=%d err=%v", digest, engine.delivered, err)

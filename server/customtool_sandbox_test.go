@@ -65,3 +65,14 @@ func TestCommandToolKeepsConversationPath(t *testing.T) {
 		t.Fatalf("conversation command used task broker: %v", backend.ran)
 	}
 }
+
+func TestCommandToolPreservesSandboxExitOutput(t *testing.T) {
+	controller, _, backend, _ := newSandboxTestController(t)
+	backend.exitCode = 7
+	s := &Server{taskSandboxes: controller}
+	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{TaskID: 7, ExplorationID: 70})
+	result, err := s.runCommandTool(ctx, "fixture", json.RawMessage(`{"command":"exit 7"}`), nil, nil)
+	if err != nil || !strings.Contains(result.Flatten(), "sandbox diagnostic") || !strings.Contains(result.Flatten(), "[exit code 7]") {
+		t.Fatalf("nonzero sandbox command = %q, %v", result.Flatten(), err)
+	}
+}

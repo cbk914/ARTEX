@@ -113,8 +113,17 @@ func (f *fakeEngine) Exec(ctx context.Context, _ string, command string) (string
 	if f.failure == "output" {
 		return "", errDockerOutputLimit
 	}
+	if f.failure == "status" {
+		return "", errDockerStatusInvalid
+	}
 	if f.failure == "exec" {
 		return "failure output", errors.New("command failed")
+	}
+	if f.failure == "command-exit" {
+		return "diagnostic\n", &CommandExitError{Code: 7}
+	}
+	if f.failure == "command-timeout" {
+		return "partial diagnostic", errors.Join(&CommandExitError{Code: 7}, context.DeadlineExceeded)
 	}
 	return "ran: " + command, nil
 }
@@ -319,7 +328,7 @@ func TestBrokerRunChecksHandleAndPolicy(t *testing.T) {
 }
 
 func TestBrokerRunRetiresUnsafeSandbox(t *testing.T) {
-	for _, failure := range []string{"verify", "output", "cancel"} {
+	for _, failure := range []string{"verify", "output", "status", "cancel"} {
 		t.Run(failure, func(t *testing.T) {
 			engine := &fakeEngine{}
 			broker, _ := New(engine, testImage)

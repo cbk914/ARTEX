@@ -79,10 +79,14 @@ func (c *Client) Run(ctx context.Context, handle, command string) (string, error
 		return "", err
 	}
 	var result struct {
-		Output string `json:"output"`
+		Output   string `json:"output"`
+		ExitCode int    `json:"exit_code"`
 	}
-	if err := json.Unmarshal(data, &result); err != nil || len(result.Output) > maxDockerOutput {
+	if err := json.Unmarshal(data, &result); err != nil || len(result.Output) > maxDockerOutput || result.ExitCode < 0 || result.ExitCode > 255 {
 		return "", errors.New("broker returned invalid command output")
+	}
+	if result.ExitCode != 0 {
+		return result.Output, &CommandExitError{Code: result.ExitCode}
 	}
 	return result.Output, nil
 }
@@ -99,10 +103,14 @@ func (c *Client) RunInput(ctx context.Context, handle, command string, input []b
 		return "", err
 	}
 	var result struct {
-		Output string `json:"output"`
+		Output   string `json:"output"`
+		ExitCode int    `json:"exit_code"`
 	}
-	if err := json.Unmarshal(data, &result); err != nil || len(result.Output) > maxDockerOutput {
+	if err := json.Unmarshal(data, &result); err != nil || len(result.Output) > maxDockerOutput || result.ExitCode < 0 || result.ExitCode > 255 {
 		return "", errors.New("broker returned invalid command output")
+	}
+	if result.ExitCode != 0 {
+		return result.Output, &CommandExitError{Code: result.ExitCode}
 	}
 	return result.Output, nil
 }

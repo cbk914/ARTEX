@@ -9,6 +9,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/sandboxbroker"
 )
 
 type sandboxTaskStore struct {
@@ -37,6 +38,7 @@ type sandboxBackendRecorder struct {
 	put         []string
 	lastInput   []byte
 	lastCommand string
+	exitCode    int
 	removed     []string
 	removeFail  bool
 	onCreate    func()
@@ -57,6 +59,9 @@ func (b *sandboxBackendRecorder) Run(_ context.Context, handle, command string) 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.ran = append(b.ran, handle+":"+command)
+	if b.exitCode != 0 {
+		return "sandbox diagnostic\n", &sandboxbroker.CommandExitError{Code: b.exitCode}
+	}
 	return handle, nil
 }
 
@@ -66,6 +71,9 @@ func (b *sandboxBackendRecorder) RunInput(_ context.Context, handle, command str
 	b.ran = append(b.ran, handle+":"+command+":"+string(input))
 	b.lastInput = append([]byte(nil), input...)
 	b.lastCommand = command
+	if b.exitCode != 0 {
+		return "sandbox diagnostic\n", &sandboxbroker.CommandExitError{Code: b.exitCode}
+	}
 	return handle, nil
 }
 
