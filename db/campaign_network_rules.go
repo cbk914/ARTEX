@@ -12,6 +12,7 @@ import (
 )
 
 var ErrNetworkRuleUnavailable = errors.New("campaign network rule is unavailable")
+var ErrInvalidNetworkRule = errors.New("invalid campaign network rule")
 
 // CampaignNetworkRule is an operator decision staged for a future broker-owned
 // egress gateway. No current ARTEX execution path consumes these rows.
@@ -61,26 +62,26 @@ func normalizeNetworkTarget(kind, raw string) (string, error) {
 func (d *DB) RecordCampaignNetworkRule(ctx context.Context, taskID int64, actor string, input CampaignNetworkRuleInput) (CampaignNetworkRule, error) {
 	var rule CampaignNetworkRule
 	if taskID <= 0 || validateNetworkActorAndReason(actor, input.Reason) != nil {
-		return rule, errors.New("invalid network rule provenance")
+		return rule, fmt.Errorf("%w: provenance", ErrInvalidNetworkRule)
 	}
 	if input.Effect != "allow" && input.Effect != "deny" {
-		return rule, errors.New("invalid network rule effect")
+		return rule, fmt.Errorf("%w: effect", ErrInvalidNetworkRule)
 	}
 	if input.Protocol != "tcp" && input.Protocol != "udp" {
-		return rule, errors.New("invalid network rule protocol")
+		return rule, fmt.Errorf("%w: protocol", ErrInvalidNetworkRule)
 	}
 	if input.PortStart < 1 || input.PortEnd > 65535 || input.PortEnd < input.PortStart {
-		return rule, errors.New("invalid network rule ports")
+		return rule, fmt.Errorf("%w: ports", ErrInvalidNetworkRule)
 	}
 	if input.AllowDirect && input.TargetKind == "hostname" {
-		return rule, errors.New("hostname rule cannot approve direct IP access")
+		return rule, fmt.Errorf("%w: hostname cannot approve direct IP access", ErrInvalidNetworkRule)
 	}
 	if !input.ExpiresAt.After(time.Now()) {
-		return rule, errors.New("network rule must expire in the future")
+		return rule, fmt.Errorf("%w: expiry", ErrInvalidNetworkRule)
 	}
 	target, err := normalizeNetworkTarget(input.TargetKind, input.TargetValue)
 	if err != nil {
-		return rule, err
+		return rule, fmt.Errorf("%w: %v", ErrInvalidNetworkRule, err)
 	}
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -168,7 +169,7 @@ func (d *DB) LoadCampaignNetworkRules(ctx context.Context, taskID int64) ([]netw
 // provenance stay intact. A repeated or cross-task revoke cannot change it.
 func (d *DB) RevokeCampaignNetworkRule(ctx context.Context, taskID, ruleID int64, actor, reason string) error {
 	if taskID <= 0 || ruleID <= 0 || validateNetworkActorAndReason(actor, reason) != nil {
-		return errors.New("invalid network rule revocation")
+		return fmt.Errorf("%w: revocation", ErrInvalidNetworkRule)
 	}
 	var inserted int64
 	err := d.QueryRowContext(ctx, `INSERT INTO campaign_network_rule_revocations (rule_id,actor,reason)

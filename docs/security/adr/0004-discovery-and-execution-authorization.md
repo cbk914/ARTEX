@@ -1,6 +1,6 @@
 # ADR 0004: Keep discovery separate from execution authorization
 
-Status: a separate decision ledger and policy evaluator are staged locally; no execution authorization boundary or operator API is active.
+Status: a separate decision ledger, policy evaluator and authenticated operator API are staged locally; no execution authorization boundary is active.
 
 ## Observed behavior
 
@@ -43,7 +43,14 @@ coverage row.
 Migration 17 adds `allow_direct` with a false default. The independent gate
 consumes fresh rows through `db.LoadCampaignNetworkRules`; a peer-range rule
 used to approve a hostname cannot by itself approve direct access to that IP.
-The gate has no bound broker handle, HTTP route, agent tool or executor path.
+The gate has no bound broker handle, agent tool or executor path. Authenticated
+`/api/tasks/{id}/network-decisions` routes now list active decisions, create a
+new decision and revoke one for the same task. The global auth middleware
+rejects missing sessions and cross-origin cookie writes; the route records the
+JWT session identifier as actor. Its JSON body is bounded and checked for
+unknown fields. Responses explicitly state `enforced:false` while no executor
+uses the gate. The route is an approval workflow staging step, not evidence
+that traffic obeys the decisions.
 Their presence does not authorize or block a network connection in the current
 server. A future authenticated operator route must supply the actor and prove
 the task grant, and the broker must query current decisions on every new
