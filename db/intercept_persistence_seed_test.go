@@ -32,3 +32,26 @@ func TestSeedPersistenceApprovalRulesIsIdempotent(t *testing.T) {
 		t.Errorf("settings flag = %q, want done", v)
 	}
 }
+
+func TestSeedCompanyScopeApprovalRuleIsIdempotent(t *testing.T) {
+	d := openTargetDB(t)
+	const name = "[built-in] Persistent change: company scope"
+	for range 2 {
+		if _, err := d.Exec(`DELETE FROM settings WHERE key = 'intercept_persistence_rules_v2'`); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.seedCompanyScopeApprovalRule(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := d.QueryRow(`SELECT count(*) FROM intercept_rules WHERE name=$1 AND pattern='^add_company_scope$' AND action='ask'`, name).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("company-scope approval rule count=%d, want 1", count)
+	}
+	if v, _, _ := d.GetSetting("intercept_persistence_rules_v2"); v != "done" {
+		t.Fatalf("seed marker=%q, want done", v)
+	}
+}

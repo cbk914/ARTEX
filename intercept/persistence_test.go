@@ -16,9 +16,9 @@ func builtinAsk(enabled bool) db.InterceptRule {
 	}
 }
 
-func TestPersistenceToolsAreSixNamedTools(t *testing.T) {
-	if len(PersistenceTools) != 6 {
-		t.Fatalf("got %d persistence tools, want 6", len(PersistenceTools))
+func TestPersistenceToolsAreSevenNamedTools(t *testing.T) {
+	if len(PersistenceTools) != 7 {
+		t.Fatalf("got %d persistence tools, want 7", len(PersistenceTools))
 	}
 	for _, name := range PersistenceTools {
 		if !IsPersistenceTool(name) {
@@ -27,6 +27,24 @@ func TestPersistenceToolsAreSixNamedTools(t *testing.T) {
 	}
 	if IsPersistenceTool("Bash") {
 		t.Fatal("Bash is not a persistence tool")
+	}
+}
+
+func TestCompanyScopeMutationRequiresOperatorApproval(t *testing.T) {
+	if !IsPersistenceTool("add_company_scope") {
+		t.Fatal("company scope mutation is not gated as persistent state")
+	}
+	ic := New(nil)
+	ic.SetRulesForTest([]db.InterceptRule{{
+		ID: 7, Name: "[built-in] Persistent change: company scope", Enabled: true, Priority: 95,
+		MatchTarget: "tool_name", MatchType: "regex", Pattern: `^add_company_scope$`, Action: "ask",
+	}})
+	if dec, ok := ic.MatchPersistence("add_company_scope", []byte(`{"company":"synthetic"}`)); !ok || dec.Action != "ask" {
+		t.Fatalf("company scope mutation skipped approval: %+v ok=%v", dec, ok)
+	}
+	ic.SetRulesForTest(nil)
+	if dec, ok := ic.MatchPersistence("add_company_scope", nil); !ok || dec.Action != "deny" {
+		t.Fatalf("company scope mutation allowed without its approval rule: %+v ok=%v", dec, ok)
 	}
 }
 

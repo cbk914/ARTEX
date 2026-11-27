@@ -281,7 +281,9 @@ worker remains confined to the intent it claimed.
 - **Coverage ledger and force-directed coverage graph**: in-scope assets are highlighted as tested
   or untested, with linked intents, facts and findings per node.
 - **Company-scoped asset graph**: shared across tasks, deduplicated by the program, with
-  domain → subdomain → service → endpoint containment.
+  domain → subdomain → service → endpoint containment. Agent calls that change
+  a company's asset scope require operator approval; if the approval rule is
+  unavailable, the change is denied.
 - **ScopeSentry sync**: pull asset data from a
   [ScopeSentry](https://github.com/Autumn-27/ScopeSentry) instance by project or task, merged by
   company scope into the asset graph for agents to explore.

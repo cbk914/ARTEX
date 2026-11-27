@@ -49,3 +49,23 @@ WHERE NOT EXISTS (SELECT 1 FROM intercept_rules WHERE name = $1)`,
 	}
 	return d.SetSetting("intercept_persistence_rules_v1", "done")
 }
+
+// seedCompanyScopeApprovalRule gates agent changes to the global company asset
+// scope. Its separate marker upgrades existing databases whose v1 seed already
+// ran. Operator changes to the rule are never silently overwritten on restart;
+// the interceptor fails closed if the approval is disabled or removed.
+func (d *DB) seedCompanyScopeApprovalRule() error {
+	if v, _, _ := d.GetSetting("intercept_persistence_rules_v2"); v == "done" {
+		return nil
+	}
+	const name = "[built-in] Persistent change: company scope"
+	if _, err := d.Exec(`
+INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
+SELECT $1, true, 95, 'tool_name', 'regex', '^add_company_scope$', 'ask',
+'Approval needed: the agent asks to change a company asset scope. This changes global asset attribution and can affect later campaign planning. Review the exact company and scope entries.',
+false, 60, 'deny'
+WHERE NOT EXISTS (SELECT 1 FROM intercept_rules WHERE name = $1)`, name); err != nil {
+		return fmt.Errorf("rule %q: %w", name, err)
+	}
+	return d.SetSetting("intercept_persistence_rules_v2", "done")
+}
