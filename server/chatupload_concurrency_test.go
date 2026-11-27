@@ -6,6 +6,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +18,39 @@ type pausedUploadBody struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+func TestChatUploadRejectsBatchWithInvalidLaterFilename(t *testing.T) {
+	dataDir := t.TempDir()
+	s := &Server{m: &Manager{dir: dataDir}}
+	var payload bytes.Buffer
+	form := multipart.NewWriter(&payload)
+	for _, name := range []string{"valid.txt", ".."} {
+		file, err := form.CreateFormFile("file", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte("synthetic")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/upload?scope=staging&id=batch", &payload)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	result := httptest.NewRecorder()
+	s.chatUpload(result, req)
+	if result.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", result.Code, result.Body.String())
+	}
+	entries, err := os.ReadDir(filepath.Join(dataDir, "drafts", "batch", "uploads"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("rejected batch left %d upload entries", len(entries))
+	}
 }
 
 func (b *pausedUploadBody) Read(p []byte) (int, error) {

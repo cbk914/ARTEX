@@ -161,6 +161,15 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer uploadDir.Close()
+	var savedNames []string
+	committed := false
+	defer func() {
+		if !committed {
+			for _, name := range savedNames {
+				_ = uploadDir.Remove(name)
+			}
+		}
+	}()
 	r.Body = http.MaxBytesReader(w, r.Body, maxChatUpload+chatUploadMultipartOverhead)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		var sizeErr *http.MaxBytesError
@@ -189,19 +198,22 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 	for _, hdr := range files {
 		name := filepath.Base(hdr.Filename) // strip any path component
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
-			continue
+			writeErr(w, 400, "invalid upload filename")
+			return
 		}
 		savedName, digest, err := saveChatUploadWithDigest(uploadDir, hdr, name, r.Context())
 		if err != nil {
 			writeErr(w, 500, "Save failed: "+err.Error())
 			return
 		}
+		savedNames = append(savedNames, savedName)
 		att := chatAttachment{Name: savedName, Path: "uploads/" + savedName, Size: hdr.Size, SHA256: digest}
 		if sub == "drafts" {
 			att.Abs = filepath.Join(dir, savedName)
 		}
 		out = append(out, att)
 	}
+	committed = true
 	writeJSON(w, 200, map[string]any{"attachments": out})
 }
 
