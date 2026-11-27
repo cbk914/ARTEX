@@ -111,6 +111,19 @@ func TestChangePasswordRevokesOldTokenAndKeepsItWhenSaveFails(t *testing.T) {
 	if !s.sessionOK(logged.Token) {
 		t.Fatal("replacement token was rejected")
 	}
+	// This endpoint bypasses requireAuth and must enforce the same origin rule
+	// when the browser supplies the session cookie automatically.
+	foreign := httptest.NewRequest("POST", "/api/auth/change-password", strings.NewReader(`{"old_password":"correct-horse-2","new_password":"attacker-chosen-3"}`))
+	foreign.AddCookie(&http.Cookie{Name: "artex_token", Value: logged.Token})
+	foreign.Header.Set("Origin", "https://evil.example")
+	w = httptest.NewRecorder()
+	s.authChangePassword(w, foreign)
+	if w.Code != 403 {
+		t.Fatalf("foreign cookie password change: status=%d want 403 body=%s", w.Code, w.Body.String())
+	}
+	if !s.sessionOK(logged.Token) {
+		t.Fatal("foreign cookie request revoked the session")
+	}
 
 	reached := false
 	s.requireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

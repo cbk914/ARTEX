@@ -536,6 +536,12 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 // token (this route is under /api/auth/* which requireAuth exempts, so the token
 // is validated here) AND the current password.
 func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
+	// /api/auth/* bypasses requireAuth. This authenticated state change must
+	// enforce the same cookie-origin rule here before reading or mutating state.
+	if cookieAuthenticated(r) && !sameOrigin(r) {
+		writeErr(w, 403, "cross-origin request refused: a cookie session can change state only from the console's own origin; send the token as Authorization: Bearer instead")
+		return
+	}
 	pg := s.pg(w)
 	if pg == nil {
 		return
