@@ -87,6 +87,26 @@ func (c *Client) Run(ctx context.Context, handle, command string) (string, error
 	return result.Output, nil
 }
 
+func (c *Client) RunInput(ctx context.Context, handle, command string, input []byte) (string, error) {
+	if !ownershipToken.MatchString(handle) || command == "" || len(command) > 64<<10 || strings.IndexByte(command, 0) >= 0 || len(input) == 0 || len(input) > maxBrokerStdinBytes {
+		return "", errors.New("invalid broker stdin execution request")
+	}
+	data, err := c.request(ctx, http.MethodPost, "/v1/sandboxes/"+handle+"/run-input", struct {
+		Command string `json:"command"`
+		Input   []byte `json:"input"`
+	}{command, input}, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil || len(result.Output) > maxDockerOutput {
+		return "", errors.New("broker returned invalid command output")
+	}
+	return result.Output, nil
+}
+
 func (c *Client) Remove(ctx context.Context, handle string) error {
 	if !ownershipToken.MatchString(handle) {
 		return errors.New("invalid sandbox handle")

@@ -58,6 +58,13 @@ func (b *sandboxBackendRecorder) Run(_ context.Context, handle, command string) 
 	return handle, nil
 }
 
+func (b *sandboxBackendRecorder) RunInput(_ context.Context, handle, command string, input []byte) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ran = append(b.ran, handle+":"+command+":"+string(input))
+	return handle, nil
+}
+
 func (b *sandboxBackendRecorder) PutArtifact(_ context.Context, handle, name string, _ []byte) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -158,6 +165,9 @@ func TestTaskSandboxBindsHandleAndRechecksBeforeReuse(t *testing.T) {
 	if digest, err := c.PutArtifact(ctx, info, "fixture", []byte("synthetic")); err != nil || digest != "digest" {
 		t.Fatalf("artifact: %q %v", digest, err)
 	}
+	if output, err := c.RunInput(ctx, info, "cat", []byte("stdin")); err != nil || output != "handle-7" {
+		t.Fatalf("stdin run: %q %v", output, err)
+	}
 	if output, err := c.Run(ctx, agent.RunInfo{TaskID: 8, ExplorationID: 80}, "true"); err != nil || output != "handle-8" {
 		t.Fatalf("other task: %q %v", output, err)
 	}
@@ -175,7 +185,7 @@ func TestTaskSandboxBindsHandleAndRechecksBeforeReuse(t *testing.T) {
 	}
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	if backend.created[7] != 1 || backend.created[8] != 1 || len(backend.ran) != 13 || len(backend.put) != 1 || backend.put[0] != "handle-7:fixture" {
+	if backend.created[7] != 1 || backend.created[8] != 1 || len(backend.ran) != 14 || len(backend.put) != 1 || backend.put[0] != "handle-7:fixture" {
 		t.Fatalf("incorrect campaign binding: creates=%v runs=%v put=%v", backend.created, backend.ran, backend.put)
 	}
 }

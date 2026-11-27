@@ -162,3 +162,46 @@ func TestBrokerHTTPArtifactAdmissionAndDigest(t *testing.T) {
 		t.Fatalf("artifact response: %d %s delivered=%d", got.Code, got.Body.String(), engine.delivered)
 	}
 }
+
+func TestBrokerHTTPRunInputPreservesBytesAndRejectsSelectors(t *testing.T) {
+	engine := &fakeEngine{}
+	broker, _ := New(engine, testImage)
+	handler, _ := newHTTPHandler(broker)
+	handle, err := broker.Create(context.Background(), 54)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/sandboxes/" + handle + "/run-input"
+	for _, body := range []string{
+		`{"command":"cat","input":null}`,
+		`{"command":"cat","input":"eA==","campaign_id":55}`,
+		`{"command":"cat","input":"not-base64"}`,
+	} {
+		if got := brokerRequest(t, handler, http.MethodPost, path, body); got.Code != http.StatusBadRequest {
+			t.Fatalf("accepted invalid stdin request: %d %s", got.Code, got.Body.String())
+		}
+	}
+	input := bytes.Repeat([]byte{0, 1, 255, 'x'}, maxBrokerStdinBytes/4)
+	body, err := json.Marshal(struct {
+		Command string `json:"command"`
+		Input   []byte `json:"input"`
+	}{"cat", input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := brokerRequest(t, handler, http.MethodPost, path, string(body))
+	if got.Code != http.StatusOK || !bytes.Equal(engine.lastInput, input) {
+		t.Fatalf("valid binary stdin rejected: HTTP %d, received %d bytes", got.Code, len(engine.lastInput))
+	}
+	tooLong := append(input, 0)
+	body, err = json.Marshal(struct {
+		Command string `json:"command"`
+		Input   []byte `json:"input"`
+	}{"cat", tooLong})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := brokerRequest(t, handler, http.MethodPost, path, string(body)); got.Code != http.StatusBadRequest {
+		t.Fatalf("accepted oversized decoded stdin: HTTP %d", got.Code)
+	}
+}

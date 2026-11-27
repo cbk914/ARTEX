@@ -52,6 +52,8 @@ The Docker transfer now checks the staged file's SHA-256 against the broker's in
 
 An internal `taskSandboxController` now binds an opaque broker handle to a live task ID and exploration ID verified from the task registry. It refuses missing or changed rows, paused, queued or terminal tasks, and chat-session attribution; it uses the engine's deletion admission barrier and does not accept a model-supplied handle. It serializes operations within one task, keeps two tasks separate, and retains a failed removal for retry. Focused race tests and vet passed with synthetic backends. The task-delete handler now removes a bound sandbox after PostgreSQL commits and the engine stops, or reports a cleanup warning while retaining a failed removal for retry. PostgreSQL-backed normal and failure/retry tests passed with synthetic task rows and a fake broker. No runtime tool path calls this controller, and no operator execution grant or production broker connection has been installed. The current shared executor remains active.
 
+The broker also accepts bounded binary stdin for a shell command through a separate root-only Unix operation. The Docker adapter invokes `docker exec -i` under the sandbox's verified fixed user; it adds no root switch or host mount. The request is capped at 1 MiB decoded input, while command time and combined output retain the existing 30-second and 1 MiB limits. Package race tests, vet and the packaged Docker-control fixture passed with synthetic input. This is required for Python parameters and future stdio routes, but it does not provide a PTY, background lifecycle, environment injection or live ARTEX tool routing.
+
 ## Execution handoff inventory
 
 | Path | Current entry point | Migration requirement |

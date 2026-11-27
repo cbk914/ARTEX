@@ -81,6 +81,9 @@ try {
     if ($first.handle.Length -ne 64) { throw 'first campaign lacked an opaque handle' }
     $run = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" '{"command":"test ! -e /run/artex-broker/broker.sock && test ! -e /var/run/docker.sock && printf broker-integration"}' | ConvertFrom-Json
     if ($run.output -ne 'broker-integration') { throw "sandbox command returned unexpected output: $($run.output)" }
+    $stdinBody = @{ command = 'cat'; input = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('SYNTHETIC_STDIN')) } | ConvertTo-Json -Compress
+    $stdinRun = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run-input" $stdinBody | ConvertFrom-Json
+    if ($stdinRun.output -ne 'SYNTHETIC_STDIN') { throw 'sandbox stdin transfer returned unexpected output' }
     $second = Invoke-Broker 'POST' '/v1/sandboxes' '{"campaign_id":72}' | ConvertFrom-Json
     if ($second.handle.Length -ne 64 -or $second.handle -eq $first.handle) { throw 'second campaign handle invalid' }
     $artifact = Invoke-Broker 'PUT' "/v1/sandboxes/$($first.handle)/artifacts/fixture.txt" 'ARTIFACT_A' 'application/octet-stream' | ConvertFrom-Json

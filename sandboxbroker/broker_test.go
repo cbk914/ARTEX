@@ -14,6 +14,7 @@ const testImage = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 type fakeEngine struct {
 	created, started, verified, executed, delivered, removed int
 	failure                                                  string
+	lastInput                                                []byte
 }
 
 type testJournal struct {
@@ -117,6 +118,10 @@ func (f *fakeEngine) Exec(ctx context.Context, _ string, command string) (string
 	}
 	return "ran: " + command, nil
 }
+func (f *fakeEngine) ExecInput(ctx context.Context, _ string, command string, input []byte) (string, error) {
+	f.lastInput = append([]byte(nil), input...)
+	return f.Exec(ctx, "", command)
+}
 func (f *fakeEngine) PutArtifact(_ context.Context, _, _ string, _ []byte) error {
 	f.delivered++
 	if f.failure == "artifact" {
@@ -130,6 +135,34 @@ func (f *fakeEngine) Remove(context.Context, string) error {
 		return errors.New("remove failure")
 	}
 	return nil
+}
+
+func TestBrokerRunInputBoundsAndRetiresUnsafeExecution(t *testing.T) {
+	engine := &fakeEngine{}
+	broker, err := New(engine, testImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := broker.Create(context.Background(), 44)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range [][]byte{nil, make([]byte, maxBrokerStdinBytes+1)} {
+		if _, err := broker.RunInput(context.Background(), handle, "cat", input); err == nil {
+			t.Fatalf("accepted stdin length %d", len(input))
+		}
+	}
+	if engine.executed != 0 {
+		t.Fatal("invalid stdin reached executor")
+	}
+	input := []byte{'a', 0, 'b'}
+	if output, err := broker.RunInput(context.Background(), handle, "cat", input); err != nil || output != "ran: cat" || string(engine.lastInput) != string(input) {
+		t.Fatalf("stdin execution: %q %v input=%q", output, err, engine.lastInput)
+	}
+	engine.failure = "output"
+	if _, err := broker.RunInput(context.Background(), handle, "cat", []byte("x")); err == nil || engine.removed != 1 {
+		t.Fatalf("unsafe stdin execution was not retired: %v removed=%d", err, engine.removed)
+	}
 }
 
 func TestBrokerArtifactDeliveryRejectsUnsafeInputAndRetiresFailure(t *testing.T) {

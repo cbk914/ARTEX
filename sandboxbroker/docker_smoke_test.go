@@ -202,6 +202,9 @@ func TestDockerCampaignIsolationSmoke(t *testing.T) {
 	if out, err := broker.Run(ctx, first, "cat /artifacts/fixture && test ! -w /artifacts/fixture && ! mv /artifacts/fixture /artifacts/replaced 2>/dev/null"); err != nil || out != "TRUSTED" {
 		t.Fatalf("executor artifact read-only check: %q %v", out, err)
 	}
+	if out, err := broker.RunInput(ctx, first, "cat", []byte("SYNTHETIC_STDIN")); err != nil || out != "SYNTHETIC_STDIN" {
+		t.Fatalf("executor stdin transfer: %q %v", out, err)
+	}
 	if _, err := broker.Run(ctx, second, "test ! -e /artifacts/fixture"); err != nil {
 		t.Fatalf("other campaign can see artifact: %v", err)
 	}

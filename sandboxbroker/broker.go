@@ -25,6 +25,7 @@ type Engine interface {
 	Start(context.Context, string) error
 	Verify(context.Context, string, Spec) error
 	Exec(context.Context, string, string) (string, error)
+	ExecInput(context.Context, string, string, []byte) (string, error)
 	PutArtifact(context.Context, string, string, []byte) error
 	Remove(context.Context, string) error
 }
@@ -233,6 +234,21 @@ func (b *Broker) retireLocked(handle string, s *sandbox) error {
 // Run executes a bounded shell command through an opaque handle. The caller must
 // first authorize the campaign; this in-memory prototype has no server API.
 func (b *Broker) Run(ctx context.Context, handle, command string) (string, error) {
+	return b.run(ctx, handle, command, nil)
+}
+
+// RunInput supplies bounded stdin to a command in the same isolated sandbox.
+// It is intended for script parameters and later stdio-capable tool routing.
+func (b *Broker) RunInput(ctx context.Context, handle, command string, input []byte) (string, error) {
+	if len(input) == 0 || len(input) > maxBrokerStdinBytes {
+		return "", errors.New("invalid sandbox stdin")
+	}
+	return b.run(ctx, handle, command, append([]byte(nil), input...))
+}
+
+const maxBrokerStdinBytes = 1 << 20
+
+func (b *Broker) run(ctx context.Context, handle, command string, input []byte) (string, error) {
 	if command == "" || len(command) > 64<<10 || strings.IndexByte(command, 0) >= 0 {
 		return "", errors.New("invalid sandbox command")
 	}
@@ -249,7 +265,12 @@ func (b *Broker) Run(ctx context.Context, handle, command string) (string, error
 	if err := b.engine.Verify(runCtx, s.container, s.spec); err != nil {
 		return "", errors.Join(fmt.Errorf("verify sandbox before command: %w", err), b.retireLocked(handle, s))
 	}
-	output, err := b.engine.Exec(runCtx, s.container, command)
+	var output string
+	if input == nil {
+		output, err = b.engine.Exec(runCtx, s.container, command)
+	} else {
+		output, err = b.engine.ExecInput(runCtx, s.container, command, input)
+	}
 	if runCtx.Err() != nil || errors.Is(err, errDockerOutputLimit) {
 		return output, errors.Join(err, runCtx.Err(), b.retireLocked(handle, s))
 	}

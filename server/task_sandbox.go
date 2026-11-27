@@ -18,6 +18,7 @@ import (
 type taskSandboxBackend interface {
 	Create(context.Context, int64) (string, error)
 	Run(context.Context, string, string) (string, error)
+	RunInput(context.Context, string, string, []byte) (string, error)
 	PutArtifact(context.Context, string, string, []byte) (string, error)
 	Remove(context.Context, string) error
 }
@@ -143,6 +144,10 @@ func (c *taskSandboxController) operate(ctx context.Context, info agent.RunInfo,
 
 func (c *taskSandboxController) Run(ctx context.Context, info agent.RunInfo, command string) (string, error) {
 	return c.operate(ctx, info, func(handle string) (string, error) { return c.broker.Run(ctx, handle, command) })
+}
+
+func (c *taskSandboxController) RunInput(ctx context.Context, info agent.RunInfo, command string, input []byte) (string, error) {
+	return c.operate(ctx, info, func(handle string) (string, error) { return c.broker.RunInput(ctx, handle, command, input) })
 }
 
 func (c *taskSandboxController) PutArtifact(ctx context.Context, info agent.RunInfo, name string, data []byte) (string, error) {

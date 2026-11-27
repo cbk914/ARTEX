@@ -53,6 +53,11 @@ func TestUnixClientRoundTripAndFailClosed(t *testing.T) {
 	if err != nil || output != "ran: echo synthetic" {
 		t.Fatalf("run: %q %v", output, err)
 	}
+	input := []byte{'a', 0, 'b'}
+	output, err = client.RunInput(context.Background(), handle, "cat", input)
+	if err != nil || output != "ran: cat" || string(engine.lastInput) != string(input) {
+		t.Fatalf("stdin run: %q %v input=%q", output, err, engine.lastInput)
+	}
 	digest, err := client.PutArtifact(context.Background(), handle, "fixture.txt", []byte("synthetic"))
 	if err != nil || len(digest) != 64 || engine.delivered != 1 {
 		t.Fatalf("artifact delivery: digest=%q delivered=%d err=%v", digest, engine.delivered, err)

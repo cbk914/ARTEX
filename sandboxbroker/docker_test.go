@@ -101,6 +101,23 @@ func TestDockerArtifactStagesUnderPrivateDirectory(t *testing.T) {
 	}
 }
 
+func TestDockerExecInputUsesSandboxUserAndBoundedStdin(t *testing.T) {
+	r := &recordingRunner{responses: map[string][]byte{"exec": []byte("stdin")}}
+	d := &DockerEngine{runner: r}
+	id := strings.Repeat("a", 64)
+	input := []byte{'a', 0, 'b'}
+	output, err := d.ExecInput(context.Background(), id, "cat", input)
+	if err != nil || output != "stdin" || !reflect.DeepEqual(r.input, input) {
+		t.Fatalf("exec stdin: %q %v input=%v", output, err, r.input)
+	}
+	if len(r.calls) != 1 || !reflect.DeepEqual(r.calls[0], []string{"exec", "-i", id, "/bin/sh", "-c", "cat"}) {
+		t.Fatalf("unexpected Docker command: %v", r.calls)
+	}
+	if _, err := d.ExecInput(context.Background(), id, "cat", make([]byte, maxBrokerStdinBytes+1)); err == nil || len(r.calls) != 1 {
+		t.Fatal("oversized stdin reached Docker")
+	}
+}
+
 func TestDockerRejectsUnexpectedImageVolume(t *testing.T) {
 	r := &recordingRunner{responses: map[string][]byte{"image": jsonArray(t, map[string]any{
 		"Id": testImage, "Config": map[string]any{"Volumes": map[string]any{"/secrets": map[string]any{}}},
