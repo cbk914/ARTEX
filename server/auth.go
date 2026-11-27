@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -269,8 +270,8 @@ func (s *Server) approver(r *http.Request) string {
 	return jwtSubject(tok, s.jwtKey)
 }
 
-// extractToken reads the JWT from Authorization: Bearer header,
-// artex_token cookie, or ?token= query param (for SSE connections).
+// extractToken reads the JWT from Authorization: Bearer or the browser cookie.
+// URL parameters are never session credentials: URLs can reach logs and history.
 func extractToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
@@ -278,12 +279,12 @@ func extractToken(r *http.Request) string {
 	if c, err := r.Cookie("artex_token"); err == nil && c.Value != "" {
 		return c.Value
 	}
-	return r.URL.Query().Get("token")
+	return ""
 }
 
 // cookieAuthenticated reports whether extractToken takes the session from the
 // artex_token cookie. The browser attaches that cookie on its own, to requests
-// a foreign page makes as well; a bearer or query token is put there by the caller.
+// a foreign page makes as well; a bearer token is put there by the caller.
 func cookieAuthenticated(r *http.Request) bool {
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 		return false
@@ -300,6 +301,13 @@ func sameOrigin(r *http.Request) bool {
 	if r.Header.Get("Sec-Fetch-Site") == "same-origin" {
 		return true
 	}
+	// The static console's local development server proxies HTTP requests and
+	// connects to backend streams directly. Trust only its explicitly configured
+	// loopback origin, which localBrowserDevOrigin validates against this host.
+	if origin := r.Header.Get("Origin"); origin != "" &&
+		origin == os.Getenv("ARTEX_BROWSER_DEV_ORIGIN") && localBrowserDevOrigin(origin, r.Host) {
+		return true
+	}
 	o, err := url.Parse(r.Header.Get("Origin"))
 	if err != nil || o.Host == "" {
 		return false
@@ -309,6 +317,54 @@ func sameOrigin(r *http.Request) bool {
 		scheme = "https"
 	}
 	return o.Scheme == scheme && hostWithPort(o.Host, scheme) == hostWithPort(r.Host, scheme)
+}
+
+// browserCookieSecure permits plain HTTP only on the local development host.
+// A public Host is treated as HTTPS-facing even if a reverse proxy terminates
+// TLS before forwarding to ARTEX. This fails closed for direct public HTTP.
+func browserCookieSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	host := strings.ToLower((&url.URL{Host: r.Host}).Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
+}
+
+func setBrowserSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: "artex_token", Value: token, Path: "/",
+		HttpOnly: true, Secure: browserCookieSecure(r), SameSite: http.SameSiteLaxMode,
+		MaxAge: int(jwtTTL / time.Second),
+	})
+}
+
+func clearBrowserSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name: "artex_token", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: browserCookieSecure(r), SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// Browser logins opt in to a server-owned HttpOnly cookie. Legacy API clients
+// keep the JSON bearer response, so they do not have to adopt cookie auth.
+func writeLoginSession(w http.ResponseWriter, r *http.Request, token string) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Header.Get("X-ARTEX-Browser-Session") != "1" {
+		writeJSON(w, 200, map[string]any{"token": token})
+		return
+	}
+	if !sameOrigin(r) {
+		writeErr(w, http.StatusForbidden, "browser session requires a same-origin request")
+		return
+	}
+	setBrowserSessionCookie(w, r, token)
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // hostWithPort returns host in lower case with its port, the scheme's default
@@ -372,6 +428,58 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"initialized": hash != ""})
+}
+
+// authSession lets the static browser UI check its HttpOnly cookie without
+// exposing the token to JavaScript. A valid legacy script-written cookie is
+// replaced with the server-owned flags during migration.
+func (s *Server) authSession(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	cookie, err := r.Cookie("artex_token")
+	if err != nil || cookie.Value == "" {
+		writeJSON(w, 200, map[string]any{"authenticated": false})
+		return
+	}
+	if !s.sessionOK(cookie.Value) {
+		clearBrowserSessionCookie(w, r)
+		writeJSON(w, 200, map[string]any{"authenticated": false})
+		return
+	}
+	setBrowserSessionCookie(w, r, cookie.Value)
+	writeJSON(w, 200, map[string]any{"authenticated": true})
+}
+
+// authMigrate exchanges a legacy localStorage bearer for a server-owned cookie.
+// The browser removes its old copy regardless of this request's outcome.
+func (s *Server) authMigrate(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) || r.Header.Get("X-ARTEX-Browser-Session") != "1" {
+		writeErr(w, http.StatusForbidden, "browser session migration requires a same-origin request")
+		return
+	}
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, "Bearer ") || !s.sessionOK(strings.TrimPrefix(h, "Bearer ")) {
+		writeErr(w, http.StatusUnauthorized, "legacy session is invalid or expired")
+		return
+	}
+	setBrowserSessionCookie(w, r, strings.TrimPrefix(h, "Bearer "))
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// authLogout clears a browser cookie. Persistent token revocation is tracked
+// separately; this endpoint does not claim to invalidate a copied bearer.
+func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
+	if !cookieAuthenticated(r) {
+		writeErr(w, http.StatusUnauthorized, "browser session cookie required")
+		return
+	}
+	if !sameOrigin(r) {
+		writeErr(w, http.StatusForbidden, "cross-origin cookie logout refused")
+		return
+	}
+	clearBrowserSessionCookie(w, r)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // setupTokenOut is where the setup token is printed: the stderr of the process.
@@ -529,7 +637,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "token generation failed")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"token": tok})
+	writeLoginSession(w, r, tok)
 }
 
 // POST /api/auth/change-password — changes the admin password. Requires a valid
@@ -684,5 +792,5 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, getSnapshot func(
 		writeErr(w, 500, "token generation failed")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"token": tok})
+	writeLoginSession(w, r, tok)
 }

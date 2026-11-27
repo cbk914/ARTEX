@@ -1,5 +1,4 @@
-const TOKEN_KEY = "artex_token";
-const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // 7 days (seconds)
+const LEGACY_TOKEN_KEY = "artex_token";
 
 export interface CurrentUser {
   id: string;
@@ -11,36 +10,27 @@ export interface CurrentUser {
 }
 
 export const auth = {
-  getToken(): string | null {
-    if (typeof window === "undefined") return null;
-    // Mock demo: no real login; return a fake token so the route guard allows going straight into the main UI.
-    return localStorage.getItem(TOKEN_KEY) ?? (process.env.NEXT_PUBLIC_MOCK === "1" ? "mock-demo" : null);
-  },
-
-  setToken(token: string): void {
-    localStorage.setItem(TOKEN_KEY, token);
-    // Also write a cookie for the Next.js middleware to read server-side
-    document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
-  },
-
-  clearToken(): void {
-    localStorage.removeItem(TOKEN_KEY);
-    document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
-  },
-
-  // Parse the current user from the JWT payload's sub field; display only, no signature verification.
-  getCurrentUser(): CurrentUser | null {
-    const token = this.getToken();
-    if (!token) return null;
-    try {
-      const parts = token.split(".");
-      if (parts.length !== 3) return null;
-      // base64url → base64
-      const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-      const username: string = payload.sub ?? "ARTEX";
-      return { id: "1", name: username, username, email: "", avatar: "", role: "operator" };
-    } catch {
-      return null;
-    }
+  getCurrentUser(): CurrentUser {
+    return { id: "1", name: "ARTEX", username: "ARTEX", email: "", avatar: "", role: "operator" };
   },
 };
+
+// Older consoles wrote a JWT to localStorage. Remove that copy before any
+// session check; a valid token can be exchanged once for a server-owned cookie.
+let migration: Promise<void> | null = null;
+
+export function migrateLegacySession(): Promise<void> {
+  if (migration) return migration;
+  migration = (async () => {
+    if (typeof window === "undefined") return;
+    const token = localStorage.getItem(LEGACY_TOKEN_KEY);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+    if (!token || process.env.NEXT_PUBLIC_MOCK === "1") return;
+    await fetch("/api/auth/migrate", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { Authorization: `Bearer ${token}`, "X-ARTEX-Browser-Session": "1" },
+    });
+  })();
+  return migration;
+}

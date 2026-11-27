@@ -124,11 +124,6 @@ import type {
 // Combined file data per attachment upload; matches maxChatUpload in server/chatupload.go.
 const MAX_CHAT_UPLOAD_BYTES = 512 * 1024 * 1024;
 
-function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("artex_token");
-}
-
 // ApiError is what http() throws for a non-2xx response: the message is the
 // server's {error} (or "METHOD path: status"), and status lets callers tell
 // failures apart.
@@ -143,22 +138,19 @@ export class ApiError extends Error {
 
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   if (MOCK) return mockHandle<T>(init?.method ?? "GET", path, init?.body ?? null);
-  const token = getToken();
   const r = await fetch(`/api${path}`, {
     ...init,
+    credentials: "same-origin",
     headers: {
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers as Record<string, string> | undefined),
     },
   });
   if (r.status === 401) {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("artex_token");
-      document.cookie = "artex_token=; path=/; max-age=0";
+    if (typeof window !== "undefined" && !path.startsWith("/auth/")) {
       window.location.href = "/login";
     }
-    throw new Error(t("Unauthorized"));
+    throw new ApiError(t("Unauthorized"), 401);
   }
   if (!r.ok) {
     const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;
@@ -192,9 +184,8 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
 // to the Go backend on :8787, whose CORS is open.
 //
 // Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
-// A same-origin stream sends the artex_token cookie. The query token is added only
-// when base is non-empty, which is the dev connection to :8787: that origin cannot
-// send the cookie.
+// A same-origin stream sends the HttpOnly session cookie. The dev connection to
+// :8787 uses EventSource with credentials and an explicitly configured local CORS origin.
 // mockReport returns a canned Markdown report for the demo.
 function mockReport(_task?: string): string {
   return `# ARTEX Penetration Test Report — Acme Corp
@@ -227,9 +218,7 @@ export function sseUrl(path: string): string {
   if (!base) {
     return path;
   }
-  const token = getToken();
-  const sep = path.includes("?") ? "&" : "?";
-  return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
+  return `${base}${path}`;
 }
 
 const get = <T>(p: string) => http<T>(p);
@@ -285,9 +274,20 @@ export const api = {
 
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
-  login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
+  authSession: () => (MOCK ? Promise.resolve({ authenticated: true }) : get<{ authenticated: boolean }>("/auth/session")),
+  login: (username: string, password: string) =>
+    http<{ ok: boolean }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+      headers: { "X-ARTEX-Browser-Session": "1" },
+    }),
   initPassword: (password: string, setupToken: string) =>
-    post<{ token: string }>("/auth/init", { password, setup_token: setupToken }),
+    http<{ ok: boolean }>("/auth/init", {
+      method: "POST",
+      body: JSON.stringify({ password, setup_token: setupToken }),
+      headers: { "X-ARTEX-Browser-Session": "1" },
+    }),
+  logout: () => post<{ ok: boolean }>("/auth/logout"),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
 
@@ -506,10 +506,9 @@ export const api = {
     if (MOCK) return { uploaded: files.length };
     const fd = new FormData();
     for (const f of files) fd.append("file", f);
-    const token = getToken();
     const r = await fetch(`/api/workspace/upload?path=${encodeURIComponent(dir)}`, {
       method: "POST",
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      credentials: "same-origin",
       body: fd,
     });
     if (!r.ok) throw new Error(t("Upload failed: {error}", { error: r.status }));
@@ -520,10 +519,7 @@ export const api = {
     if (MOCK) {
       blob = new Blob([`(demo) Sample download content of ${path}.`], { type: "text/plain" });
     } else {
-      const token = getToken();
-      const r = await fetch(`/api/workspace/download?path=${encodeURIComponent(path)}`, {
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      });
+      const r = await fetch(`/api/workspace/download?path=${encodeURIComponent(path)}`);
       if (!r.ok) throw new Error(t("Download failed: {error}", { error: r.status }));
       blob = await r.blob();
     }
@@ -541,8 +537,7 @@ export const api = {
     if (!/^\/api\/tasks\/\d+\/evidence\/ask-operator-[a-zA-Z0-9._-]+$/.test(url)) {
       throw new Error("Invalid evidence URL");
     }
-    const token = getToken();
-    const response = await fetch(url, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+    const response = await fetch(url);
     if (!response.ok) throw new Error(t("Download failed: {error}", { error: response.status }));
     const blob = await response.blob();
     const objectURL = URL.createObjectURL(blob);
@@ -659,10 +654,7 @@ export const api = {
     } else if (opts.scope === "filtered" && opts.filters) {
       for (const [k, v] of findingFilterParams(opts.filters)) p.set(k, v);
     }
-    const token = getToken();
-    const r = await fetch(`/api/exploration/findings/export?${p.toString()}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const r = await fetch(`/api/exploration/findings/export?${p.toString()}`);
     if (!r.ok) throw new Error(t("Export failed: {error}", { error: r.status }));
     const blob = await r.blob();
     // Prefer the backend's Content-Disposition for the filename; fall back to a default name.
@@ -732,10 +724,8 @@ export const api = {
     side: "request" | "response",
     contextTask?: string,
   ) => {
-    const token = getToken();
     const response = await fetch(
       `/api/exploration/findings/${id}/traffic/${bindingId}/body?side=${side}&download=1${contextTask ? `&context_task=${encodeURIComponent(contextTask)}` : ""}`,
-      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
     );
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: t("Download failed") }));
@@ -919,10 +909,7 @@ export const api = {
   // The JSON-only `get` cannot carry binary, hence the direct fetch.
   trafficBlob: async (hash: string) => {
     if (MOCK) throw new Error(t("Blob download is not available in mock mode"));
-    const token = getToken();
-    const r = await fetch(`/api/traffic/blob?hash=${encodeURIComponent(hash)}`, {
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    });
+    const r = await fetch(`/api/traffic/blob?hash=${encodeURIComponent(hash)}`);
     if (!r.ok) throw new Error(t("Blob download failed: {error}", { error: r.status }));
     return new Uint8Array(await r.arrayBuffer());
   },
@@ -970,14 +957,9 @@ export const api = {
     if (opts.respMin) qs.set("resp_min", opts.respMin);
     if (opts.respMax) qs.set("resp_max", opts.respMax);
     const suffix = qs.toString();
-    const token = getToken();
-    const r = await fetch(`/api/traffic/export/har${suffix ? `?${suffix}` : ""}`, {
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    });
+    const r = await fetch(`/api/traffic/export/har${suffix ? `?${suffix}` : ""}`);
     if (r.status === 401) {
       if (typeof window !== "undefined") {
-        localStorage.removeItem("artex_token");
-        document.cookie = "artex_token=; path=/; max-age=0";
         window.location.href = "/login";
       }
       throw new Error(t("Unauthorized"));
@@ -1081,10 +1063,7 @@ export const api = {
   notifyRetryDelivery: (id: number) => post<{ ok: boolean }>(`/notify/deliveries/${id}/retry`),
   report: async (task?: string) => {
     if (MOCK) return mockReport(task);
-    const token = getToken();
-    const r = await fetch(`/api/report${tq(task)}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const r = await fetch(`/api/report${tq(task)}`);
     if (!r.ok) throw new Error(t("Report failed: {error}", { error: r.status }));
     return r.text();
   },
@@ -1113,10 +1092,9 @@ export const api = {
       };
     const fd = new FormData();
     for (const f of files) fd.append("file", f);
-    const token = getToken();
     const r = await fetch(`/api/chat/upload?scope=${scope}&id=${encodeURIComponent(id)}`, {
       method: "POST",
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      credentials: "same-origin",
       body: fd,
     });
     if (!r.ok) throw new Error(t("Upload failed: {error}", { error: `${r.status} ${await r.text()}` }));
@@ -1380,11 +1358,10 @@ export const api = {
     if (MOCK) return { name: file.name.replace(/\.zip$/i, ""), files: 1 };
     const fd = new FormData();
     fd.append("file", file);
-    const token = getToken();
     const r = await fetch(`/api/skills/upload${overwrite ? "?overwrite=true" : ""}`, {
       method: "POST",
       body: fd,
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: "same-origin",
     });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body?.error || t("Upload failed ({status})", { status: r.status }));
@@ -1475,21 +1452,16 @@ export const api = {
   // ---- intercept tool-config (global tool interception scope) ----
   interceptGetToolConfig: async (): Promise<{ enabled_tools: string[] }> => {
     if (MOCK) return { enabled_tools: ["bash"] };
-    const token = getToken();
-    const r = await fetch("/api/intercept/tool-config", {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const r = await fetch("/api/intercept/tool-config");
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
   interceptSetToolConfig: async (enabledTools: string[]): Promise<void> => {
     if (MOCK) return;
-    const token = getToken();
     const r = await fetch("/api/intercept/tool-config", {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({ enabled_tools: enabledTools }),
     });

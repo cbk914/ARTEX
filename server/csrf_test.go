@@ -89,12 +89,11 @@ func TestCookieStateChangeNeedsSameOrigin(t *testing.T) {
 		}
 	}
 
-	// The token in the query string is a credential the caller holds, like the
-	// bearer token; with the cookie also present the cookie is the one used.
+	// A long-lived session in a URL is not an accepted credential.
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, csrfRequest("POST", "/api/mcp?token="+tok, "", map[string]string{"Origin": "https://evil.example"}))
-	if rec.Code != 204 {
-		t.Errorf("query token, foreign Origin: status=%d, want 204", rec.Code)
+	if rec.Code != 401 {
+		t.Errorf("query token, foreign Origin: status=%d, want 401", rec.Code)
 	}
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, csrfRequest("POST", "/api/mcp?token="+tok, "", map[string]string{"Cookie": tok, "Origin": "https://evil.example"}))

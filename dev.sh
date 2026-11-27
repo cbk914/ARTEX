@@ -15,7 +15,7 @@ trap cleanup EXIT INT TERM
 # banner and shows in the web UI (agents run as you and can read the keys, config and database credentials).
 # Agent isolation needs Linux and a root server; use the Docker image for it. As root, a failed isolation
 # self-test stops the start (server/isolation.go).
-go run ./cmd/artex -addr :8787 -proxy 127.0.0.1:8788 &
+ARTEX_BROWSER_DEV_ORIGIN=http://localhost:5173 go run ./cmd/artex -addr :8787 -proxy 127.0.0.1:8788 &
 
 # Frontend hot reload (Vite/Next dev server, /api reverse-proxied to :8787).
 ( cd web && npm run dev ) &

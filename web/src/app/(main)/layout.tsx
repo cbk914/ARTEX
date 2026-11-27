@@ -5,7 +5,9 @@ import * as React from "react";
 
 import { AppSidebar } from "@/app/(main)/_components/sidebar/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { auth } from "@/lib/auth";
+import { t } from "@/i18n";
+import { api } from "@/lib/api";
+import { migrateLegacySession } from "@/lib/auth";
 import { getClientCookie } from "@/lib/cookie.client";
 import {
   SIDEBAR_COLLAPSIBLE_VALUES,
@@ -29,20 +31,30 @@ function readPref<T extends string>(key: string, allowed: readonly T[], fallback
 }
 
 export default function Layout({ children }: Readonly<{ children: ReactNode }>) {
-  // Client-side auth gate — replaces the Next proxy/middleware that static export
-  // disables. No token → bounce to /login; render nothing until confirmed so no
-  // protected UI (or its API calls) flashes for a logged-out visitor.
+  // Static export has no server middleware. Check the HttpOnly cookie through
+  // the API before rendering protected UI or starting its data requests.
   const [authed, setAuthed] = React.useState(false);
+  const [authUnavailable, setAuthUnavailable] = React.useState(false);
   React.useEffect(() => {
-    if (auth.getToken()) {
+    if (process.env.NEXT_PUBLIC_MOCK === "1") {
       setAuthed(true);
-    } else {
-      // When the client-side guard sees a logged-out state, the cookie must be cleared too: otherwise proxy.ts, going
-      // by "cookie exists" alone, would bounce us from /login back to the main UI and ping-pong with this guard
-      // in an infinite redirect → blank screen (triggered when cookie and localStorage disagree).
-      auth.clearToken();
-      window.location.href = "/login";
+      return;
     }
+    let cancelled = false;
+    void migrateLegacySession()
+      .catch(() => {})
+      .then(() => api.authSession())
+      .then(({ authenticated }) => {
+        if (cancelled) return;
+        if (authenticated) setAuthed(true);
+        else window.location.replace("/login");
+      })
+      .catch(() => {
+        if (!cancelled) setAuthUnavailable(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const defaultOpen = typeof document === "undefined" ? true : getClientCookie("sidebar_state") !== "false";
@@ -57,6 +69,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
     PREFERENCE_DEFAULTS.sidebar_collapsible,
   );
 
+  if (authUnavailable) return <div role="alert">{t("Unable to connect to the backend service")}</div>;
   if (!authed) return null;
 
   return (

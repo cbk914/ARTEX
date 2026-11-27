@@ -773,6 +773,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
+	mux.HandleFunc("GET /api/auth/session", s.authSession)
+	mux.HandleFunc("POST /api/auth/migrate", s.authMigrate)
+	mux.HandleFunc("POST /api/auth/logout", s.authLogout)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
 
 	mux.HandleFunc("GET /api/health", s.health)
@@ -4646,7 +4649,15 @@ func (s *Server) gc(w http.ResponseWriter, r *http.Request) {
 
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		devOrigin := os.Getenv("ARTEX_BROWSER_DEV_ORIGIN")
+		if origin != "" && origin == devOrigin && localBrowserDevOrigin(devOrigin, r.Host) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Add("Vary", "Origin")
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
@@ -4655,6 +4666,19 @@ func cors(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func localBrowserDevOrigin(origin, requestHost string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme != "http" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	devHost := strings.ToLower(u.Hostname())
+	backendHost := strings.ToLower((&url.URL{Host: requestHost}).Hostname())
+	if devHost != backendHost || u.Port() == "" {
+		return false
+	}
+	return devHost == "localhost" || (net.ParseIP(devHost) != nil && net.ParseIP(devHost).IsLoopback())
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

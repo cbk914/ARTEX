@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { t } from "@/i18n";
 import { api } from "@/lib/api";
-import { auth } from "@/lib/auth";
+import { migrateLegacySession } from "@/lib/auth";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -42,22 +42,22 @@ export default function LoginPage() {
   }, [termsOpen]);
 
   useEffect(() => {
-    // Already signed in — go straight to the main UI (static export has no middleware to do this redirect).
-    const token = auth.getToken();
-    if (token) {
-      // localStorage may still hold credentials while the cookie is gone. Sync first, then start a fresh request,
-      // so a server-side guard or route cache cannot bounce the redirect back to the login page still in its checking state.
-      auth.setToken(token);
-      window.location.replace("/function/tasks");
-      return;
-    }
-    api
-      .authStatus()
-      .then(({ initialized }) => {
+    void (async () => {
+      try {
+        await migrateLegacySession().catch(() => {});
+        const { authenticated } = await api.authSession();
+        if (authenticated) {
+          window.location.replace("/function/tasks");
+          return;
+        }
+        const { initialized } = await api.authStatus();
         if (!initialized) router.replace("/setup");
-      })
-      .catch(() => setError(t("Unable to connect to the backend service")))
-      .finally(() => setChecking(false));
+      } catch {
+        setError(t("Unable to connect to the backend service"));
+      } finally {
+        setChecking(false);
+      }
+    })();
   }, [router]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -69,8 +69,7 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const { token } = await api.login("ARTEX", password);
-      auth.setToken(token);
+      await api.login("ARTEX", password);
       window.location.replace("/function/tasks");
     } catch {
       setError(t("Incorrect username or password"));
