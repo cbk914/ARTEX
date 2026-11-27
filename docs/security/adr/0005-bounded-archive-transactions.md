@@ -17,16 +17,30 @@ The package writer and extractor now receive the server context and check it
 between entries and file-copy chunks. A cancelled package is not advertised;
 the worker's existing rollback removes its staging tree. The paths still have
 no per-job cancellation or operation deadline, and a single blocking filesystem
-read cannot be interrupted promptly by a context check. Extraction checks tar headers
-against `maxArchiveFiles = 1_000_000` and `maxArchiveBytes = 128 TiB`. Those are
-corruption ceilings, not practical per-job resource budgets. A compact zstd
-archive can therefore demand far more disk and time than the operator expects.
+read cannot be interrupted promptly by a context check. At baseline,
+extraction checked tar headers against one million entries and 128 TiB.
+Those were corruption ceilings, not practical per-job resource budgets.
 The local remediation branch replaced the additive size check with an
 overflow-safe subtraction and capped zstd decoder memory at 64 MiB; the
 existing archive format is unchanged. The checksum
 is verified by reading the entire compressed file before extraction, but that
 does not itself bound decompressed output or prove that mutable source bytes
 matched the PostgreSQL snapshot.
+
+Packaging and restoration now share configurable defaults for compressed
+bytes (8 GiB), expanded bytes (16 GiB), one file (4 GiB), manifest (32 MiB),
+entries (100,000) and path depth (64). Fixed ceilings are 32 GiB, 64 GiB,
+32 GiB, 128 MiB, 250,000 and 128 respectively. A bounded writer stops
+compressed output before the cap and leaves no published `.partial` package.
+The extractor checks compressed input before checksum verification, applies
+overflow-safe header budgets before file creation, and limits its decoder
+input. Remote restore checks recorded compressed size before downloading.
+Invalid settings fail the operation. A stored legacy archive above a default
+is retained; an operator can review it and raise a setting within its fixed
+ceiling for restoration. Packages above a fixed ceiling need a separately
+reviewed migration. These limits do not bound job runtime, total campaign
+storage or in-place file mutation. The applied policy is not yet recorded in
+archive metadata, and full legacy restore migration has not been tested.
 
 The package writer now walks the private staging tree through `os.Root.FS()`
 and opens regular files relative to that root. It compares the selected entry

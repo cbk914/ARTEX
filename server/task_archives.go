@@ -330,6 +330,13 @@ func (s *Server) restoreTaskArchive(job *pgdb.TaskArchive) (runErr error) {
 	defer func() { _ = os.RemoveAll(extracted) }()
 	packagePath := job.ArchivePath
 	if strings.HasPrefix(packagePath, "s3://") {
+		budget, err := configuredArchiveBudget()
+		if err != nil {
+			return err
+		}
+		if job.CompressedSize > budget.compressed {
+			return errArchiveBudget
+		}
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "download_and_verify", 12)
 		packagePath = filepath.Join(extracted, "download.tar.zst")
 		if err := s.archiveStore.Download(s.ctx, job.ArchivePath, packagePath, job.SHA256, job.CompressedSize); err != nil {

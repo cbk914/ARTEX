@@ -24,8 +24,6 @@ import (
 const (
 	archiveDirMode  = 0o700
 	archiveFileMode = 0o600
-	maxArchiveFiles = 1_000_000
-	maxArchiveBytes = int64(1 << 47) // 128 TiB safety ceiling for corrupt headers.
 )
 
 type archiveFileMove struct {
@@ -621,6 +619,10 @@ func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string
 	if snapshot == nil {
 		return 0, 0, "", errors.New("nil task archive snapshot")
 	}
+	budget, err := configuredArchiveBudget()
+	if err != nil {
+		return 0, 0, "", err
+	}
 	if err = os.MkdirAll(filepath.Dir(path), archiveDirMode); err != nil {
 		return 0, 0, "", err
 	}
@@ -632,7 +634,8 @@ func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string
 	if err != nil {
 		return 0, 0, "", err
 	}
-	encodeErr := json.NewEncoder(manifestFile).Encode(snapshot)
+	manifestLimit := &archiveLimitWriter{out: manifestFile, max: budget.manifest}
+	encodeErr := json.NewEncoder(manifestLimit).Encode(snapshot)
 	var syncErr error
 	if encodeErr == nil {
 		syncErr = manifestFile.Sync()
@@ -659,7 +662,8 @@ func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string
 	}()
 	hasher := sha256.New()
 	multi := io.MultiWriter(file, hasher)
-	encoder, err := zstd.NewWriter(multi,
+	compressedLimit := &archiveLimitWriter{out: multi, max: budget.compressed}
+	encoder, err := zstd.NewWriter(compressedLimit,
 		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(10)),
 		zstd.WithEncoderCRC(true),
 	)
@@ -674,6 +678,7 @@ func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string
 		return 0, 0, "", err
 	}
 	defer payloadRoot.Close()
+	var entries int
 	walkErr := fs.WalkDir(payloadRoot.FS(), ".", func(relative string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -700,6 +705,11 @@ func writeTaskArchivePackageContext(ctx context.Context, path, payloadDir string
 			// a writer appears, tar refuses a socket, and the unpacker refuses the rest.
 			log.Printf("[task-archive] skipping a file that is not regular (unsupported by the archive): %s", relative)
 			return nil
+		}
+		entries++
+		if entries > budget.entries || archivePathDepth(relative) > budget.depth ||
+			(info.Mode().IsRegular() && (info.Size() < 0 || info.Size() > budget.file || info.Size() > budget.expanded-originalSize)) {
+			return errArchiveBudget
 		}
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
@@ -777,15 +787,29 @@ func extractTaskArchivePackageContext(ctx context.Context, path, expectedSHA, de
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	budget, err := configuredArchiveBudget()
+	if err != nil {
+		return err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if fileInfo.Size() > budget.compressed {
+		return errArchiveBudget
+	}
 	if expectedSHA != "" {
 		hasher := sha256.New()
-		if _, err := io.Copy(hasher, archiveContextReader{ctx: ctx, r: file}); err != nil {
+		if _, err := io.Copy(hasher, archiveContextReader{ctx: ctx, r: io.LimitReader(file, budget.compressed+1)}); err != nil {
 			return err
+		}
+		if current, err := file.Seek(0, io.SeekCurrent); err != nil || current > budget.compressed {
+			return errArchiveBudget
 		}
 		if hex.EncodeToString(hasher.Sum(nil)) != strings.ToLower(expectedSHA) {
 			return errors.New("task archive checksum mismatch")
@@ -794,7 +818,7 @@ func extractTaskArchivePackageContext(ctx context.Context, path, expectedSHA, de
 			return err
 		}
 	}
-	decoder, err := zstd.NewReader(archiveContextReader{ctx: ctx, r: file}, zstd.WithDecoderMaxMemory(64<<20))
+	decoder, err := zstd.NewReader(archiveContextReader{ctx: ctx, r: io.LimitReader(file, budget.compressed)}, zstd.WithDecoderMaxMemory(64<<20))
 	if err != nil {
 		return err
 	}
@@ -822,11 +846,17 @@ func extractTaskArchivePackageContext(ctx context.Context, path, expectedSHA, de
 			return err
 		}
 		entries++
-		if entries > maxArchiveFiles || header.Size < 0 || header.Size > maxArchiveBytes-total {
+		if entries > budget.entries || header.Size < 0 || header.Size > budget.file || header.Size > budget.expanded-total {
 			return errors.New("task archive exceeds extraction safety limits")
 		}
 		total += header.Size
 		clean := filepath.Clean(filepath.FromSlash(header.Name))
+		if archivePathDepth(clean) > budget.depth {
+			return errors.New("task archive exceeds extraction safety limits")
+		}
+		if clean == "manifest.json" && header.Size > budget.manifest {
+			return errors.New("task archive exceeds extraction safety limits")
+		}
 		if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("unsafe task archive path %q", header.Name)
 		}

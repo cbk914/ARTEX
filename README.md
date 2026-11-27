@@ -600,6 +600,19 @@ remains a fallback when the new setting is absent. A request over the limit rece
 retain their existing 512 MiB upload ceilings. This setting does not cap total
 campaign storage or other upload endpoints.
 
+**Task archive budgets**: Packaging and restoration default to 8 GiB compressed,
+16 GiB expanded, 4 GiB per file, 32 MiB for the manifest, 100,000 entries and
+64 path components. Set `ARTEX_ARCHIVE_MAX_COMPRESSED_MIB`,
+`ARTEX_ARCHIVE_MAX_EXPANDED_MIB`, `ARTEX_ARCHIVE_MAX_FILE_MIB`,
+`ARTEX_ARCHIVE_MAX_MANIFEST_MIB`, `ARTEX_ARCHIVE_MAX_ENTRIES` and
+`ARTEX_ARCHIVE_MAX_DEPTH` to adjust them. Fixed ceilings are 32 GiB, 64 GiB,
+32 GiB, 128 MiB, 250,000 and 128 respectively; invalid settings fail the
+archive operation. The file limit must not exceed the expanded limit, and the
+manifest limit must not exceed the file limit. An older package that exceeds
+the defaults remains stored; review its size and raise the relevant setting
+within the fixed ceiling before retrying restoration. Packages above a fixed
+ceiling need a separate reviewed migration; they are not deleted automatically.
+
 **Common flags**: `./start.sh -addr :8787 -proxy :8788` (`-addr` frontend/API, `-proxy` traffic
 recording proxy).
 
