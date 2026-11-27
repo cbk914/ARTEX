@@ -24,6 +24,8 @@ This proves only that Docker Desktop can supply separate local container boundar
 
 This is deliberately not wired into the server or agents. It cannot run campaign tools, mediate network egress, exchange artifacts, authorize operators, persist handles across a broker crash, or prove teardown after host failure. The prototype's Docker Engine access remains host-powerful. `Create` failure cleanup and Docker policy verification need further adversarial review before production use. The current ARTEX deployment still uses the shared executor. The prototype is not a security acceptance gate and must not be reported as remediating ARTEX-001, ARTEX-004, or ARTEX-005.
 
+The opt-in `TestDockerBrokerSmoke` was cross-compiled with Go 1.26.11 and passed natively on Windows against the local image digest. It created, verified and removed one disposable Docker container; no sandbox container remained afterward.
+
 ## Proposed boundary
 
 Introduce a trusted campaign execution broker that owns a `SandboxHandle` for each campaign. The handle carries an opaque ID, the authorized campaign and operator scope, private filesystem and process namespace references, network policy reference, resource limits and lifecycle state. The server must use that handle for every Bash, interactive shell, background task, Python, custom-tool and stdio MCP launch, and for file-tool operations. No tool receives a raw identity, host path or namespace selector from an LLM or imported document.
