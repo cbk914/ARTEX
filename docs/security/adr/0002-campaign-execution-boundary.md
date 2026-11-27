@@ -24,7 +24,7 @@ This proves only that Docker Desktop can supply separate local container boundar
 
 This is deliberately not wired into the server or agents. It cannot run campaign tools, mediate network egress, exchange artifacts, authorize operators, persist handles across a broker crash, or prove teardown after host failure. The prototype's Docker Engine access remains host-powerful. `Create` failure cleanup and Docker policy verification need further adversarial review before production use. The current ARTEX deployment still uses the shared executor. The prototype is not a security acceptance gate and must not be reported as remediating ARTEX-001, ARTEX-004, or ARTEX-005.
 
-The opt-in `TestDockerBrokerSmoke` was cross-compiled with Go 1.26.11 and passed natively on Windows against the local image digest. It created, verified and removed one disposable Docker container; no sandbox container remained afterward.
+The Docker adapter now attaches a separate random ownership label to each container and checks that label and the full container ID before cleaning up a failed `docker create`. A deterministic unit regression rejects removal of a different container occupying the requested name; an opt-in Docker Desktop collision test confirmed the foreign fixture survived. The opt-in `TestDockerBrokerSmoke` was cross-compiled with Go 1.26.11 and passed natively on Windows against the local image digest. It created, verified and removed one disposable Docker container; no sandbox container remained afterward.
 
 ## Execution handoff inventory
 

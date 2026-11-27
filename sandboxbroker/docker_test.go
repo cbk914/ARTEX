@@ -34,13 +34,13 @@ func TestDockerCreateUsesFixedPolicy(t *testing.T) {
 	id := strings.Repeat("a", 64)
 	r := &recordingRunner{responses: map[string][]byte{"create": []byte(id + "\n")}}
 	d := &DockerEngine{runner: r}
-	spec := Spec{Name: "artex-campaign-" + strings.Repeat("b", 32), Image: testImage}
+	spec := Spec{Name: "artex-campaign-" + strings.Repeat("b", 32), Image: testImage, Token: strings.Repeat("c", 64)}
 	got, err := d.Create(context.Background(), spec)
 	if err != nil || got != id {
 		t.Fatalf("create: %q %v", got, err)
 	}
 	args := r.calls[0]
-	for _, flag := range []string{"--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true", "--user=10001:10001", "--memory=256m", "--memory-swap=256m", "--cpus=0.5", "--pids-limit=64"} {
+	for _, flag := range []string{"--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true", "--user=10001:10001", "--memory=256m", "--memory-swap=256m", "--cpus=0.5", "--pids-limit=64", "--label=" + ownershipLabel + "=" + spec.Token} {
 		found := false
 		for _, arg := range args {
 			if arg == flag {
@@ -73,12 +73,46 @@ func TestDockerRejectsUnexpectedImageVolume(t *testing.T) {
 	}
 }
 
+func TestDockerCreateNameConflictDoesNotRemoveForeignContainer(t *testing.T) {
+	id := strings.Repeat("e", 64)
+	spec := Spec{Name: "artex-campaign-" + strings.Repeat("b", 32), Image: testImage, Token: strings.Repeat("c", 64)}
+	for _, tc := range []struct {
+		name, label string
+		wantRemove  bool
+	}{
+		{"foreign", strings.Repeat("d", 64), false},
+		{"owned", spec.Token, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &recordingRunner{failure: "create", responses: map[string][]byte{"inspect": jsonArray(t, map[string]any{
+				"Id": id, "Name": "/" + spec.Name, "Config": map[string]any{"Labels": map[string]string{ownershipLabel: tc.label}},
+			})}}
+			d := &DockerEngine{runner: r}
+			if _, err := d.Create(context.Background(), spec); err == nil {
+				t.Fatal("expected create failure")
+			}
+			removed := false
+			for _, call := range r.calls {
+				if call[0] == "rm" {
+					removed = true
+					if call[len(call)-1] != id {
+						t.Fatalf("removed by unverified name: %v", call)
+					}
+				}
+			}
+			if removed != tc.wantRemove {
+				t.Fatalf("removed=%v want %v, calls=%v", removed, tc.wantRemove, r.calls)
+			}
+		})
+	}
+}
+
 func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 	id := strings.Repeat("b", 64)
-	spec := Spec{Name: "artex-campaign-" + strings.Repeat("c", 32), Image: testImage}
+	spec := Spec{Name: "artex-campaign-" + strings.Repeat("c", 32), Image: testImage, Token: strings.Repeat("d", 64)}
 	base := map[string]any{
 		"Id": id, "Name": "/" + spec.Name, "Image": testImage,
-		"State": map[string]any{"Running": true}, "Config": map[string]any{"User": sandboxUser},
+		"State": map[string]any{"Running": true}, "Config": map[string]any{"User": sandboxUser, "Labels": map[string]string{ownershipLabel: spec.Token}},
 		"HostConfig": map[string]any{"NetworkMode": "none", "ReadonlyRootfs": true, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges:true"}, "Memory": memoryLimit, "MemorySwap": memoryLimit, "PidsLimit": pidLimit, "NanoCpus": nanoCPUs,
 			"Tmpfs": map[string]string{"/tmp": "rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001,mode=0700", "/campaign": "rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700", "/app/data": "rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700", "/app/keys": "rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700"}},
 		"Mounts":          []map[string]string{},

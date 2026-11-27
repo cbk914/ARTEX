@@ -26,6 +26,9 @@ func (f *fakeEngine) Create(_ context.Context, s Spec) (string, error) {
 	if !strings.HasPrefix(s.Name, "artex-campaign-") || s.Image != testImage {
 		return "", errors.New("bad spec")
 	}
+	if !ownershipToken.MatchString(s.Token) {
+		return "", errors.New("missing ownership token")
+	}
 	return strings.Repeat("a", 64), nil
 }
 func (f *fakeEngine) Start(context.Context, string) error {

@@ -15,7 +15,7 @@ import (
 
 var pinnedImage = regexp.MustCompile(`^(?:[a-zA-Z0-9][a-zA-Z0-9._/:-]*@)?sha256:[a-f0-9]{64}$`)
 
-type Spec struct{ Name, Image string }
+type Spec struct{ Name, Image, Token string }
 
 // Engine is implemented only by a trusted host-side container controller.
 type Engine interface {
@@ -74,7 +74,11 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 	if err != nil {
 		return "", err
 	}
-	spec := Spec{Name: "artex-campaign-" + nameID, Image: b.image}
+	token, err := randomHex(32)
+	if err != nil {
+		return "", err
+	}
+	spec := Spec{Name: "artex-campaign-" + nameID, Image: b.image, Token: token}
 	container, err := b.engine.Create(ctx, spec)
 	if err != nil {
 		return "", fmt.Errorf("create sandbox: %w", err)

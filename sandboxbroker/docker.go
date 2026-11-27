@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -20,6 +21,9 @@ const (
 
 var containerID = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var containerName = regexp.MustCompile(`^artex-campaign-[a-f0-9]{32}$`)
+var ownershipToken = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+const ownershipLabel = "org.artex.sandbox.token"
 
 type commandRunner interface {
 	Run(context.Context, ...string) ([]byte, error)
@@ -98,11 +102,11 @@ func (d *DockerEngine) CheckImage(ctx context.Context, image string) error {
 }
 
 func (d *DockerEngine) Create(ctx context.Context, spec Spec) (string, error) {
-	if !containerName.MatchString(spec.Name) || !pinnedImage.MatchString(spec.Image) {
+	if !containerName.MatchString(spec.Name) || !pinnedImage.MatchString(spec.Image) || !ownershipToken.MatchString(spec.Token) {
 		return "", errors.New("invalid sandbox spec")
 	}
 	args := []string{
-		"create", "--pull=never", "--name", spec.Name,
+		"create", "--pull=never", "--name", spec.Name, "--label=" + ownershipLabel + "=" + spec.Token,
 		"--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
 		"--user=" + sandboxUser, "--memory=256m", "--memory-swap=256m", "--cpus=0.5", "--pids-limit=64",
 		"--ulimit=nofile=1024:1024",
@@ -115,20 +119,36 @@ func (d *DockerEngine) Create(ctx context.Context, spec Spec) (string, error) {
 	}
 	output, err := d.runner.Run(ctx, args...)
 	if err != nil {
-		// Docker may create a container before returning an error. Remove only our random name.
-		cleanupCtx := context.WithoutCancel(ctx)
-		_, cleanupErr := d.runner.Run(cleanupCtx, "rm", "-f", "-v", spec.Name)
-		if cleanupErr != nil {
-			return "", errors.Join(err, fmt.Errorf("cleanup failed for %s: %w", spec.Name, cleanupErr))
-		}
-		return "", err
+		return "", errors.Join(err, d.cleanupOwned(spec))
 	}
 	id := strings.TrimSpace(string(output))
 	if !containerID.MatchString(id) {
-		_, cleanupErr := d.runner.Run(context.WithoutCancel(ctx), "rm", "-f", "-v", spec.Name)
-		return "", errors.Join(errors.New("docker returned invalid container ID"), cleanupErr)
+		return "", errors.Join(errors.New("docker returned invalid container ID"), d.cleanupOwned(spec))
 	}
 	return id, nil
+}
+
+// cleanupOwned checks an independent random label before removing a container by
+// ID. A name collision must never delete a container that the broker did not create.
+func (d *DockerEngine) cleanupOwned(spec Spec) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := d.runner.Run(ctx, "inspect", spec.Name)
+	if err != nil {
+		return nil
+	} // No confirmed owned container to remove.
+	info, err := decodeOne[containerInfo](output)
+	if err != nil {
+		return fmt.Errorf("inspect failed creation %s: %w", spec.Name, err)
+	}
+	if info.Name != "/"+spec.Name || !containerID.MatchString(info.ID) || info.Config.Labels[ownershipLabel] != spec.Token {
+		return nil // A colliding or replaced name is not ours.
+	}
+	_, err = d.runner.Run(ctx, "rm", "-f", "-v", info.ID)
+	if err != nil {
+		return fmt.Errorf("remove failed creation %s: %w", spec.Name, err)
+	}
+	return nil
 }
 
 func (d *DockerEngine) Start(ctx context.Context, id string) error {
@@ -147,8 +167,9 @@ type containerInfo struct {
 		Running bool `json:"Running"`
 	} `json:"State"`
 	Config struct {
-		User string   `json:"User"`
-		Env  []string `json:"Env"`
+		User   string            `json:"User"`
+		Env    []string          `json:"Env"`
+		Labels map[string]string `json:"Labels"`
 	} `json:"Config"`
 	HostConfig struct {
 		NetworkMode    string            `json:"NetworkMode"`
@@ -206,7 +227,7 @@ func (d *DockerEngine) Verify(ctx context.Context, id string, spec Spec) error {
 		return err
 	}
 	h := info.HostConfig
-	if info.ID != id || info.Name != "/"+spec.Name || info.Image != image.ID || !info.State.Running || info.Config.User != sandboxUser ||
+	if info.ID != id || info.Name != "/"+spec.Name || info.Config.Labels[ownershipLabel] != spec.Token || info.Image != image.ID || !info.State.Running || info.Config.User != sandboxUser ||
 		h.NetworkMode != "none" || !h.ReadonlyRootfs || h.Privileged || len(h.CapAdd) != 0 || !contains(h.CapDrop, "ALL") ||
 		!contains(h.SecurityOpt, "no-new-privileges:true") || h.Memory != memoryLimit || h.MemorySwap != memoryLimit ||
 		h.PidsLimit != pidLimit || h.NanoCpus != nanoCPUs || len(h.Binds) != 0 || len(info.NetworkSettings.Networks) != 1 {
