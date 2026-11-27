@@ -5,6 +5,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,6 +15,7 @@ const testImage = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 type fakeEngine struct {
 	created, started, verified, executed, delivered, removed int
 	failure                                                  string
+	failRemove                                               bool
 	lastInput                                                []byte
 }
 
@@ -82,6 +84,9 @@ func (f *fakeEngine) CheckImage(context.Context, string) error {
 }
 func (f *fakeEngine) Create(_ context.Context, s Spec) (string, error) {
 	f.created++
+	if f.failure == "create" {
+		return "", errors.New("uncertain Docker create result")
+	}
 	if !strings.HasPrefix(s.Name, "artex-campaign-") || s.Image != testImage {
 		return "", errors.New("bad spec")
 	}
@@ -140,10 +145,123 @@ func (f *fakeEngine) PutArtifact(_ context.Context, _, _ string, _ []byte) error
 }
 func (f *fakeEngine) Remove(context.Context, string) error {
 	f.removed++
-	if f.failure == "remove" {
+	if f.failure == "remove" || f.failRemove {
 		return errors.New("remove failure")
 	}
 	return nil
+}
+
+func TestBrokerBoundsAggregateSandboxCount(t *testing.T) {
+	engine := &fakeEngine{}
+	broker, err := New(engine, testImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	for campaign := int64(1); campaign <= 8; campaign++ {
+		handle, err := broker.Create(context.Background(), campaign)
+		if err != nil {
+			t.Fatalf("create campaign %d: %v", campaign, err)
+		}
+		if campaign == 1 {
+			first = handle
+		}
+	}
+	if _, err := broker.Create(context.Background(), 9); err == nil || engine.created != 8 {
+		t.Fatalf("aggregate limit did not reject ninth sandbox: err=%v created=%d", err, engine.created)
+	}
+	if err := broker.Remove(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Create(context.Background(), 9); err != nil || engine.created != 9 {
+		t.Fatalf("freed capacity was not reusable: err=%v created=%d", err, engine.created)
+	}
+}
+
+func TestBrokerConfiguredSandboxLimit(t *testing.T) {
+	owner := strings.Repeat("f", 32)
+	for _, limit := range []int{0, -1, MaxSandboxLimit + 1} {
+		if _, err := NewWithJournalLimit(&fakeEngine{}, testImage, owner, nil, limit); err == nil {
+			t.Fatalf("accepted invalid sandbox limit %d", limit)
+		}
+	}
+	engine := &fakeEngine{}
+	broker, err := NewWithJournalLimit(engine, testImage, owner, nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for campaign := int64(1); campaign <= 2; campaign++ {
+		if _, err := broker.Create(context.Background(), campaign); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := broker.Create(context.Background(), 3); err == nil || engine.created != 2 {
+		t.Fatalf("configured limit did not stop Docker creation: err=%v created=%d", err, engine.created)
+	}
+}
+
+func TestBrokerConcurrentSandboxAdmission(t *testing.T) {
+	engine := &fakeEngine{}
+	broker, err := NewWithJournalLimit(engine, testImage, strings.Repeat("f", 32), nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	results := make(chan error, 16)
+	for campaign := int64(1); campaign <= 16; campaign++ {
+		wg.Add(1)
+		go func(id int64) {
+			defer wg.Done()
+			_, err := broker.Create(context.Background(), id)
+			results <- err
+		}(campaign)
+	}
+	wg.Wait()
+	close(results)
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 2 || engine.created != 2 {
+		t.Fatalf("concurrent admission exceeded capacity: successes=%d created=%d", successes, engine.created)
+	}
+}
+
+func TestBrokerStopsCreationAfterFailedCleanup(t *testing.T) {
+	engine := &fakeEngine{failure: "start", failRemove: true}
+	broker, err := New(engine, testImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Create(context.Background(), 1); err == nil || engine.removed != 1 {
+		t.Fatalf("expected failed start and cleanup: err=%v removed=%d", err, engine.removed)
+	}
+	engine.failure = ""
+	engine.failRemove = false
+	if _, err := broker.Create(context.Background(), 2); err == nil || engine.created != 1 {
+		t.Fatalf("accepted another sandbox with an orphaned container: err=%v created=%d", err, engine.created)
+	}
+}
+
+func TestBrokerStopsCreationAfterUncertainDockerCreate(t *testing.T) {
+	engine := &fakeEngine{failure: "create"}
+	journal := &testJournal{}
+	broker, err := NewWithJournal(engine, testImage, strings.Repeat("f", 32), journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Create(context.Background(), 1); err == nil {
+		t.Fatal("accepted uncertain Docker creation")
+	}
+	if len(journal.recorded) != 1 || len(journal.forgot) != 0 {
+		t.Fatalf("lost recovery intent after uncertain creation: %+v", journal)
+	}
+	engine.failure = ""
+	if _, err := broker.Create(context.Background(), 2); err == nil || engine.created != 1 {
+		t.Fatalf("accepted new creation before recovery: err=%v created=%d", err, engine.created)
+	}
 }
 
 func TestBrokerRunInputBoundsAndRetiresUnsafeExecution(t *testing.T) {

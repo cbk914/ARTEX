@@ -16,6 +16,13 @@ import (
 
 var pinnedImage = regexp.MustCompile(`^(?:[a-zA-Z0-9][a-zA-Z0-9._/:-]*@)?sha256:[a-f0-9]{64}$`)
 
+// DefaultSandboxLimit caps active containers unless the operator sets a
+// stricter or larger reviewed limit at broker startup.
+const DefaultSandboxLimit = 8
+
+// MaxSandboxLimit is the fixed upper bound for the startup setting.
+const MaxSandboxLimit = 64
+
 type Spec struct{ Name, Image, Token, Owner string }
 
 // CommandExitError reports a completed sandbox command's nonzero exit status.
@@ -53,13 +60,15 @@ type sandbox struct {
 	poisoned   bool
 }
 type Broker struct {
-	engine     Engine
-	image      string
-	owner      string
-	journal    Journal
-	mu         sync.Mutex
-	byHandle   map[string]*sandbox
-	byCampaign map[int64]string
+	engine         Engine
+	image          string
+	owner          string
+	journal        Journal
+	limit          int
+	creationUnsafe bool
+	mu             sync.Mutex
+	byHandle       map[string]*sandbox
+	byCampaign     map[int64]string
 }
 
 func New(engine Engine, image string) (*Broker, error) {
@@ -79,10 +88,19 @@ func NewWithOwner(engine Engine, image, owner string) (*Broker, error) {
 // NewWithJournal is used by the Linux service after its private journal has
 // been recovered. Tests and in-memory prototypes may omit a journal.
 func NewWithJournal(engine Engine, image, owner string, journal Journal) (*Broker, error) {
+	return NewWithJournalLimit(engine, image, owner, journal, DefaultSandboxLimit)
+}
+
+// NewWithJournalLimit bounds the total number of active sandboxes. A service
+// may choose a smaller site-specific limit, but cannot remove the ceiling.
+func NewWithJournalLimit(engine Engine, image, owner string, journal Journal, limit int) (*Broker, error) {
 	if engine == nil || !pinnedImage.MatchString(image) || !brokerOwner.MatchString(owner) {
 		return nil, errors.New("sandbox broker requires an engine, pinned image digest and valid owner ID")
 	}
-	return &Broker{engine: engine, image: image, owner: owner, journal: journal, byHandle: make(map[string]*sandbox), byCampaign: make(map[int64]string)}, nil
+	if limit < 1 || limit > MaxSandboxLimit {
+		return nil, errors.New("sandbox limit must be between 1 and 64")
+	}
+	return &Broker{engine: engine, image: image, owner: owner, journal: journal, limit: limit, byHandle: make(map[string]*sandbox), byCampaign: make(map[int64]string)}, nil
 }
 
 func randomHex(n int) (string, error) {
@@ -100,8 +118,14 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.creationUnsafe {
+		return "", errors.New("sandbox creation requires broker recovery")
+	}
 	if _, exists := b.byCampaign[campaignID]; exists {
 		return "", errors.New("campaign already has a sandbox")
+	}
+	if len(b.byHandle) >= b.limit {
+		return "", errors.New("sandbox capacity reached")
 	}
 	if err := b.engine.CheckImage(ctx, b.image); err != nil {
 		return "", fmt.Errorf("check sandbox image: %w", err)
@@ -126,6 +150,9 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 	}
 	container, err := b.engine.Create(ctx, spec)
 	if err != nil {
+		// Docker may have created a container before the client lost its result.
+		// Only journal recovery can establish whether that happened.
+		b.creationUnsafe = true
 		return "", fmt.Errorf("create sandbox: %w", err)
 	}
 	committed := false
@@ -134,9 +161,13 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if cleanupErr := b.engine.Remove(cleanupCtx, container); cleanupErr != nil {
+				b.creationUnsafe = true
 				err = errors.Join(err, fmt.Errorf("remove failed sandbox %s: %w", container, cleanupErr))
 			} else if b.journal != nil {
-				err = errors.Join(err, b.journal.Forget(spec))
+				if forgetErr := b.journal.Forget(spec); forgetErr != nil {
+					b.creationUnsafe = true
+					err = errors.Join(err, forgetErr)
+				}
 			}
 		}
 	}()
