@@ -20,6 +20,10 @@ The initial baseline had no passing dynamic security regression. ARTEX-011 and A
 
 For each validated finding add root cause, affected files, remediation, test command and result, residual risk and commit. A skipped check remains skipped.
 
+## ARTEX-001/005 broker attestation hardening
+
+A pre-fix synthetic inspect regression showed `DockerEngine.Verify` accepted host namespace modes, device access, supplementary groups, extra hosts, links, inherited volumes, port bindings and an added `seccomp=unconfined` security option. The fixed verifier rejects these deviations from the broker's fixed container policy. `go test -race ./sandboxbroker -count=1` and `go vet ./sandboxbroker` passed in a network-disconnected Go 1.26.11 container. A cross-compiled Windows test binary then passed the opt-in `TestDockerBrokerSmoke` against the local pinned ARTEX image on Docker Desktop and removed its disposable sandbox. No broker-labeled container remained. This is a safer host-side prototype, not deployed campaign isolation; ARTEX-001 and ARTEX-005 stay open.
+
 ## Cross-cutting global asset deletion authorization
 
 Local remediation commit: `8634d12`.

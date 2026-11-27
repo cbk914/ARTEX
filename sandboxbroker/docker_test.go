@@ -147,6 +147,40 @@ func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 	if err := d.Verify(context.Background(), id, spec); err == nil {
 		t.Fatal("accepted shared XDG cache")
 	}
+	config["Env"] = []string{"HOME=/campaign", "TMPDIR=/tmp", "XDG_CONFIG_HOME=/campaign/.config", "XDG_CACHE_HOME=/campaign/.cache", "XDG_DATA_HOME=/campaign/.local/share", "XDG_STATE_HOME=/campaign/.local/state", "XDG_RUNTIME_DIR=/campaign/.run"}
+	host := base["HostConfig"].(map[string]any)
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"PidMode", "host"},
+		{"IpcMode", "host"},
+		{"UTSMode", "host"},
+		{"CgroupnsMode", "host"},
+		{"UsernsMode", "host"},
+		{"Devices", []map[string]string{{"PathOnHost": "/dev/kvm"}}},
+		{"DeviceRequests", []map[string]string{{"Driver": "nvidia"}}},
+		{"GroupAdd", []string{"docker"}},
+		{"ExtraHosts", []string{"host.docker.internal:host-gateway"}},
+		{"Links", []string{"other:other"}},
+		{"VolumesFrom", []string{"other"}},
+		{"PortBindings", map[string]any{"8080/tcp": []any{}}},
+		{"SecurityOpt", []string{"no-new-privileges:true", "seccomp=unconfined"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previous, present := host[tc.name]
+			host[tc.name] = tc.value
+			r.responses["inspect"] = jsonArray(t, base)
+			if err := d.Verify(context.Background(), id, spec); err == nil {
+				t.Errorf("accepted unsafe %s", tc.name)
+			}
+			if present {
+				host[tc.name] = previous
+			} else {
+				delete(host, tc.name)
+			}
+		})
+	}
 }
 
 func TestDockerExecKeepsCommandAfterContainerID(t *testing.T) {

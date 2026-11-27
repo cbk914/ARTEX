@@ -226,18 +226,30 @@ type containerInfo struct {
 		Labels map[string]string `json:"Labels"`
 	} `json:"Config"`
 	HostConfig struct {
-		NetworkMode    string            `json:"NetworkMode"`
-		ReadonlyRootfs bool              `json:"ReadonlyRootfs"`
-		CapAdd         []string          `json:"CapAdd"`
-		CapDrop        []string          `json:"CapDrop"`
-		SecurityOpt    []string          `json:"SecurityOpt"`
-		Memory         int64             `json:"Memory"`
-		MemorySwap     int64             `json:"MemorySwap"`
-		PidsLimit      int64             `json:"PidsLimit"`
-		NanoCpus       int64             `json:"NanoCpus"`
-		Binds          []string          `json:"Binds"`
-		Tmpfs          map[string]string `json:"Tmpfs"`
-		Privileged     bool              `json:"Privileged"`
+		NetworkMode    string                     `json:"NetworkMode"`
+		PidMode        string                     `json:"PidMode"`
+		IpcMode        string                     `json:"IpcMode"`
+		UTSMode        string                     `json:"UTSMode"`
+		CgroupnsMode   string                     `json:"CgroupnsMode"`
+		UsernsMode     string                     `json:"UsernsMode"`
+		ReadonlyRootfs bool                       `json:"ReadonlyRootfs"`
+		CapAdd         []string                   `json:"CapAdd"`
+		CapDrop        []string                   `json:"CapDrop"`
+		SecurityOpt    []string                   `json:"SecurityOpt"`
+		Devices        []json.RawMessage          `json:"Devices"`
+		DeviceRequests []json.RawMessage          `json:"DeviceRequests"`
+		GroupAdd       []string                   `json:"GroupAdd"`
+		ExtraHosts     []string                   `json:"ExtraHosts"`
+		Links          []string                   `json:"Links"`
+		VolumesFrom    []string                   `json:"VolumesFrom"`
+		PortBindings   map[string]json.RawMessage `json:"PortBindings"`
+		Memory         int64                      `json:"Memory"`
+		MemorySwap     int64                      `json:"MemorySwap"`
+		PidsLimit      int64                      `json:"PidsLimit"`
+		NanoCpus       int64                      `json:"NanoCpus"`
+		Binds          []string                   `json:"Binds"`
+		Tmpfs          map[string]string          `json:"Tmpfs"`
+		Privileged     bool                       `json:"Privileged"`
 	} `json:"HostConfig"`
 	Mounts []struct {
 		Type        string `json:"Type"`
@@ -256,6 +268,8 @@ func contains(values []string, target string) bool {
 	}
 	return false
 }
+
+func privateNamespaceMode(mode string) bool { return mode == "" || mode == "private" }
 
 func (d *DockerEngine) Verify(ctx context.Context, id string, spec Spec) error {
 	if !containerID.MatchString(id) {
@@ -282,8 +296,13 @@ func (d *DockerEngine) Verify(ctx context.Context, id string, spec Spec) error {
 	}
 	h := info.HostConfig
 	if info.ID != id || info.Name != "/"+spec.Name || info.Config.Labels[ownershipLabel] != spec.Token || info.Image != image.ID || !info.State.Running || info.Config.User != sandboxUser ||
-		h.NetworkMode != "none" || !h.ReadonlyRootfs || h.Privileged || len(h.CapAdd) != 0 || !contains(h.CapDrop, "ALL") ||
-		!contains(h.SecurityOpt, "no-new-privileges:true") || h.Memory != memoryLimit || h.MemorySwap != memoryLimit ||
+		h.NetworkMode != "none" || !privateNamespaceMode(h.PidMode) || !privateNamespaceMode(h.IpcMode) ||
+		!privateNamespaceMode(h.UTSMode) || !privateNamespaceMode(h.CgroupnsMode) || !privateNamespaceMode(h.UsernsMode) ||
+		!h.ReadonlyRootfs || h.Privileged || len(h.CapAdd) != 0 || !contains(h.CapDrop, "ALL") ||
+		len(h.SecurityOpt) != 1 || h.SecurityOpt[0] != "no-new-privileges:true" ||
+		len(h.Devices) != 0 || len(h.DeviceRequests) != 0 || len(h.GroupAdd) != 0 ||
+		len(h.ExtraHosts) != 0 || len(h.Links) != 0 || len(h.VolumesFrom) != 0 || len(h.PortBindings) != 0 ||
+		h.Memory != memoryLimit || h.MemorySwap != memoryLimit ||
 		h.PidsLimit != pidLimit || h.NanoCpus != nanoCPUs || len(h.Binds) != 0 || len(info.NetworkSettings.Networks) != 1 {
 		return errors.New("sandbox container violates fixed isolation policy")
 	}

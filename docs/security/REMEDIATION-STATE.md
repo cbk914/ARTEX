@@ -62,6 +62,8 @@ Updated: 2026-11-27. Local branch: `codex/security-remediation`. Baseline: `3cb0
 
 ## Current state
 
+ARTEX-001/005 broker attestation follow-up: a pre-fix unit regression showed that a Docker inspect record with host namespace modes, device access, inherited volumes, supplementary groups, extra hosts, links, port bindings or an extra security option could pass `DockerEngine.Verify`. The local verifier now rejects those deviations. The broker race suite and vet passed in a network-disconnected Go 1.26.11 container; a Windows cross-compiled opt-in smoke test created and removed one disposable sandbox with the local pinned ARTEX image. This hardens the host-side prototype only; no ARTEX execution path uses it, and the P0 findings remain open.
+
 Latest ARTEX-004 gateway transport commit: `7f5e525`. It remains local, unintegrated and undeployed.
 
 ARTEX-004 gateway transport follow-up: a new `networkgateway` package binds TCP CONNECT requests to a fixed campaign ID and the staged policy evaluator, rejects other methods, bounds concurrency, duration and bytes, and refuses a tunnel whose connection cannot accept a deadline. Isolated loopback race tests exercise an allowed tunnel, direct-IP bypass denial, revocation on the next connection, limits and malformed authority; `go vet` passed for the gateway and evaluator. This is not wired into ARTEX or a Docker network, and does not intercept plain HTTP, UDP, SOCKS or raw sockets. The P0 finding remains open.
