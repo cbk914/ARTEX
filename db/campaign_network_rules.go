@@ -5,9 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/netip"
 	"strings"
 	"time"
+
+	"github.com/Autumn-27/artex/networkpolicy"
 )
 
 var ErrNetworkRuleUnavailable = errors.New("campaign network rule is unavailable")
@@ -23,6 +24,7 @@ type CampaignNetworkRule struct {
 	Protocol    string // tcp or udp
 	PortStart   int
 	PortEnd     int
+	AllowDirect bool
 	Actor       string
 	Reason      string
 	CreatedAt   time.Time
@@ -36,6 +38,7 @@ type CampaignNetworkRuleInput struct {
 	Protocol    string
 	PortStart   int
 	PortEnd     int
+	AllowDirect bool
 	ExpiresAt   time.Time
 	Reason      string
 }
@@ -49,42 +52,7 @@ func validateNetworkActorAndReason(actor, reason string) error {
 }
 
 func normalizeNetworkTarget(kind, raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	switch kind {
-	case "ip":
-		address, err := netip.ParseAddr(value)
-		if err != nil || address.Zone() != "" {
-			return "", errors.New("invalid network IP target")
-		}
-		return address.Unmap().String(), nil
-	case "cidr":
-		prefix, err := netip.ParsePrefix(value)
-		if err != nil || prefix.Addr().Zone() != "" || prefix.Addr().Is4In6() {
-			return "", errors.New("invalid network CIDR target")
-		}
-		return prefix.Masked().String(), nil
-	case "hostname":
-		value = strings.TrimSuffix(strings.ToLower(value), ".")
-		if len(value) == 0 || len(value) > 253 {
-			return "", errors.New("invalid network hostname")
-		}
-		if _, err := netip.ParseAddr(value); err == nil {
-			return "", errors.New("IP literal must use the IP target kind")
-		}
-		for _, label := range strings.Split(value, ".") {
-			if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-				return "", errors.New("invalid network hostname label")
-			}
-			for _, char := range label {
-				if !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-') {
-					return "", errors.New("invalid network hostname label")
-				}
-			}
-		}
-		return value, nil
-	default:
-		return "", errors.New("invalid network target kind")
-	}
+	return networkpolicy.NormalizeTarget(kind, raw)
 }
 
 // RecordCampaignNetworkRule writes a distinct operator decision. It is not
@@ -103,6 +71,9 @@ func (d *DB) RecordCampaignNetworkRule(ctx context.Context, taskID int64, actor 
 	}
 	if input.PortStart < 1 || input.PortEnd > 65535 || input.PortEnd < input.PortStart {
 		return rule, errors.New("invalid network rule ports")
+	}
+	if input.AllowDirect && input.TargetKind == "hostname" {
+		return rule, errors.New("hostname rule cannot approve direct IP access")
 	}
 	if !input.ExpiresAt.After(time.Now()) {
 		return rule, errors.New("network rule must expire in the future")
@@ -125,12 +96,13 @@ func (d *DB) RecordCampaignNetworkRule(ctx context.Context, taskID int64, actor 
 	}
 	rule = CampaignNetworkRule{TaskID: taskID, Effect: input.Effect, TargetKind: input.TargetKind,
 		TargetValue: target, Protocol: input.Protocol, PortStart: input.PortStart, PortEnd: input.PortEnd,
-		Actor: actor, Reason: input.Reason, ExpiresAt: input.ExpiresAt.UTC()}
+		AllowDirect: input.AllowDirect,
+		Actor:       actor, Reason: input.Reason, ExpiresAt: input.ExpiresAt.UTC()}
 	err = tx.QueryRowContext(ctx, `INSERT INTO campaign_network_rules
-(task_id,effect,target_kind,target_value,protocol,port_start,port_end,actor,reason,expires_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id,created_at`,
+(task_id,effect,target_kind,target_value,protocol,port_start,port_end,allow_direct,actor,reason,expires_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id,created_at`,
 		rule.TaskID, rule.Effect, rule.TargetKind, rule.TargetValue, rule.Protocol,
-		rule.PortStart, rule.PortEnd, rule.Actor, rule.Reason, rule.ExpiresAt).Scan(&rule.ID, &rule.CreatedAt)
+		rule.PortStart, rule.PortEnd, rule.AllowDirect, rule.Actor, rule.Reason, rule.ExpiresAt).Scan(&rule.ID, &rule.CreatedAt)
 	if err != nil {
 		return CampaignNetworkRule{}, err
 	}
@@ -147,7 +119,7 @@ func (d *DB) ActiveCampaignNetworkRules(ctx context.Context, taskID int64) ([]Ca
 		return nil, ErrNetworkRuleUnavailable
 	}
 	rows, err := d.QueryContext(ctx, `SELECT r.id,r.task_id,r.effect,r.target_kind,r.target_value,r.protocol,
-r.port_start,r.port_end,r.actor,r.reason,r.created_at,r.expires_at
+r.port_start,r.port_end,r.allow_direct,r.actor,r.reason,r.created_at,r.expires_at
 FROM campaign_network_rules r
 JOIN tasks t ON t.id=r.task_id AND t.deleted_at IS NULL
 LEFT JOIN campaign_network_rule_revocations v ON v.rule_id=r.id
@@ -161,7 +133,7 @@ ORDER BY r.id`, taskID)
 	for rows.Next() {
 		var rule CampaignNetworkRule
 		if err := rows.Scan(&rule.ID, &rule.TaskID, &rule.Effect, &rule.TargetKind,
-			&rule.TargetValue, &rule.Protocol, &rule.PortStart, &rule.PortEnd,
+			&rule.TargetValue, &rule.Protocol, &rule.PortStart, &rule.PortEnd, &rule.AllowDirect,
 			&rule.Actor, &rule.Reason, &rule.CreatedAt, &rule.ExpiresAt); err != nil {
 			return nil, err
 		}
@@ -169,6 +141,25 @@ ORDER BY r.id`, taskID)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	return rules, nil
+}
+
+// LoadCampaignNetworkRules adapts the current database decisions to the
+// independent network gate. The gateway must bind taskID to an opaque sandbox
+// handle before using this source; this method does not establish that grant.
+func (d *DB) LoadCampaignNetworkRules(ctx context.Context, taskID int64) ([]networkpolicy.Rule, error) {
+	stored, err := d.ActiveCampaignNetworkRules(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	rules := make([]networkpolicy.Rule, 0, len(stored))
+	for _, row := range stored {
+		rules = append(rules, networkpolicy.Rule{
+			Effect: row.Effect, TargetKind: row.TargetKind, TargetValue: row.TargetValue,
+			Protocol: row.Protocol, PortStart: row.PortStart, PortEnd: row.PortEnd,
+			AllowDirect: row.AllowDirect, ExpiresAt: row.ExpiresAt,
+		})
 	}
 	return rules, nil
 }

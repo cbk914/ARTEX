@@ -1,6 +1,6 @@
 # ADR 0004: Keep discovery separate from execution authorization
 
-Status: a separate decision ledger is staged locally; no execution authorization boundary or operator API is active.
+Status: a separate decision ledger and policy evaluator are staged locally; no execution authorization boundary or operator API is active.
 
 ## Observed behavior
 
@@ -40,7 +40,10 @@ source-task inheritance produce no decision, that a cross-task revocation is
 rejected, and that a version-15 database gains the table without altering its
 coverage row.
 
-These methods have no HTTP route, agent tool, broker adapter or gateway consumer.
+Migration 17 adds `allow_direct` with a false default. The independent gate
+consumes fresh rows through `db.LoadCampaignNetworkRules`; a peer-range rule
+used to approve a hostname cannot by itself approve direct access to that IP.
+The gate has no bound broker handle, HTTP route, agent tool or executor path.
 Their presence does not authorize or block a network connection in the current
 server. A future authenticated operator route must supply the actor and prove
 the task grant, and the broker must query current decisions on every new

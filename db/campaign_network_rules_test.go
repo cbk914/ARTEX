@@ -17,7 +17,7 @@ func TestCampaignNetworkRulesMigrationPreservesPriorData(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if entry.Name() == "0016_campaign_network_rules.sql" {
+		if entry.Name() == "0016_campaign_network_rules.sql" || entry.Name() == "0017_network_direct_ip_intent.sql" {
 			continue
 		}
 		content, err := fs.ReadFile(migrationsFS(), entry.Name())
@@ -48,7 +48,7 @@ func TestCampaignNetworkRulesMigrationPreservesPriorData(t *testing.T) {
 	}
 	defer after.Close()
 	var count, version int
-	if err := after.QueryRow(`SELECT count(*), max(version) FROM schema_migrations`).Scan(&count, &version); err != nil || count != 16 || version != 16 {
+	if err := after.QueryRow(`SELECT count(*), max(version) FROM schema_migrations`).Scan(&count, &version); err != nil || count != 17 || version != 17 {
 		t.Fatalf("migration state %d/%d: %v", count, version, err)
 	}
 	var preserved string
@@ -58,6 +58,54 @@ func TestCampaignNetworkRulesMigrationPreservesPriorData(t *testing.T) {
 	rules, err := after.ActiveCampaignNetworkRules(context.Background(), task.ID)
 	if err != nil || len(rules) != 0 {
 		t.Fatalf("migration created an implicit network grant: %+v %v", rules, err)
+	}
+}
+
+func TestDirectIntentMigrationDefaultsToPeerOnly(t *testing.T) {
+	dsn := scratchDSN(t, "directintent")
+	prior := fstest.MapFS{}
+	entries, err := fs.ReadDir(migrationsFS(), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "0017_network_direct_ip_intent.sql" {
+			continue
+		}
+		content, err := fs.ReadFile(migrationsFS(), entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		prior[entry.Name()] = &fstest.MapFile{Data: content}
+	}
+	before, err := openWithMigrations(dsn, prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := before.CreateTaskWithOptions("synthetic peer pin", "local target", TaskCreateOptions{})
+	if err != nil {
+		before.Close()
+		t.Fatal(err)
+	}
+	var id int64
+	err = before.QueryRow(`INSERT INTO campaign_network_rules
+(task_id,effect,target_kind,target_value,protocol,port_start,port_end,actor,reason,expires_at)
+VALUES ($1,'allow','cidr','127.0.0.1/32','tcp',8443,8443,'local-admin','peer pin',now()+interval '1 hour') RETURNING id`, task.ID).Scan(&id)
+	if err != nil {
+		before.Close()
+		t.Fatal(err)
+	}
+	if err := before.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer after.Close()
+	var direct bool
+	if err := after.QueryRow(`SELECT allow_direct FROM campaign_network_rules WHERE id=$1`, id).Scan(&direct); err != nil || direct {
+		t.Fatalf("pre-0017 peer pin became direct IP authorization: %v %v", direct, err)
 	}
 }
 
@@ -109,6 +157,10 @@ func TestCampaignNetworkRulesStaySeparateFromCoverage(t *testing.T) {
 	if err != nil || len(rules) != 2 || rules[0].ID != allow.ID || rules[1].ID != deny.ID {
 		t.Fatalf("cross-connection rules: %+v %v", rules, err)
 	}
+	policy, err := other.LoadCampaignNetworkRules(ctx, source.ID)
+	if err != nil || len(policy) != 2 || policy[0].TargetValue != "example.test" || policy[1].AllowDirect {
+		t.Fatalf("gateway policy adapter: %+v %v", policy, err)
+	}
 	if inherited, err := other.ActiveCampaignNetworkRules(ctx, child.ID); err != nil || len(inherited) != 0 {
 		t.Fatalf("source grant inherited: %+v %v", inherited, err)
 	}
@@ -121,6 +173,10 @@ func TestCampaignNetworkRulesStaySeparateFromCoverage(t *testing.T) {
 	rules, err = d.ActiveCampaignNetworkRules(ctx, source.ID)
 	if err != nil || len(rules) != 1 || rules[0].ID != deny.ID {
 		t.Fatalf("revocation not immediately visible: %+v %v", rules, err)
+	}
+	policy, err = other.LoadCampaignNetworkRules(ctx, source.ID)
+	if err != nil || len(policy) != 1 || policy[0].Effect != "deny" {
+		t.Fatalf("gateway adapter retained revoked grant: %+v %v", policy, err)
 	}
 	if _, err := d.Exec(`INSERT INTO campaign_network_rules
 (task_id,effect,target_kind,target_value,protocol,port_start,port_end,actor,reason,created_at,expires_at)
@@ -172,6 +228,9 @@ func TestCampaignNetworkRuleValidation(t *testing.T) {
 		func(in *CampaignNetworkRuleInput) { in.ExpiresAt = time.Now().Add(-time.Hour) },
 		func(in *CampaignNetworkRuleInput) { in.Effect = "observe" },
 		func(in *CampaignNetworkRuleInput) { in.Reason = "" },
+		func(in *CampaignNetworkRuleInput) {
+			in.TargetKind, in.TargetValue, in.AllowDirect = "hostname", "fixture.test", true
+		},
 	} {
 		input := valid
 		change(&input)
@@ -188,6 +247,15 @@ func TestCampaignNetworkRuleValidation(t *testing.T) {
 	var count int
 	if err := d.QueryRow(`SELECT count(*) FROM campaign_network_rules WHERE task_id=$1`, task.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("invalid rules were stored: %d %v", count, err)
+	}
+	valid.AllowDirect = true
+	direct, err := d.RecordCampaignNetworkRule(context.Background(), task.ID, "local-admin", valid)
+	if err != nil || !direct.AllowDirect {
+		t.Fatalf("explicit direct IP decision: %+v %v", direct, err)
+	}
+	policy, err := d.LoadCampaignNetworkRules(context.Background(), task.ID)
+	if err != nil || len(policy) != 1 || !policy[0].AllowDirect {
+		t.Fatalf("direct IP intent missing from policy adapter: %+v %v", policy, err)
 	}
 	if got, err := normalizeNetworkTarget("ip", "::ffff:127.0.0.1"); err != nil || got != "127.0.0.1" {
 		t.Fatalf("mapped IPv4 normalization: %q %v", got, err)

@@ -1,6 +1,6 @@
 # ADR 0003: Campaign network authorization boundary
 
-Status: proposed, with a staged decision ledger. No network enforcement change or deployment has occurred.
+Status: proposed, with a staged decision ledger and independent policy evaluator. No ARTEX execution path uses the evaluator; no network enforcement change or deployment has occurred.
 
 ## Evidence and constraint
 
@@ -11,6 +11,8 @@ The task API describes `target_gate` as opt-in. The existing target gate, dial c
 The campaign execution broker from ADR 0002 must create each executor in a private network namespace or equivalent isolated sandbox with no default route. Only the trusted broker may configure its network edge. Agent processes must not receive Docker daemon access, network-administration capabilities or a path to the host network namespace. All outbound connections, including raw sockets and HTTP proxies, must traverse a broker-owned egress gateway that binds the connection to an opaque campaign handle and a current operator-approved policy revision. The target gate remains a complementary early check and operator workflow.
 
 The authorization model separates discovered and candidate assets from operator-authorized destinations (ARTEX-009). Deny and revocation rules take precedence. A rule identifies allowed destination identity, protocol and port range; hostnames are resolved by a broker-controlled resolver and checked at resolution and dial time against the current policy. The gateway records DNS answers and the actual IPv4 or IPv6 peer. HTTP redirects, SOCKS and CONNECT cannot create a second path around the gateway. New connections after revocation are denied against the new policy revision. The system records a bounded, redacted audit event for every denied connection.
+
+The staged `networkpolicy.Gate` evaluates one TCP or UDP dial using a fresh database read, requires both a hostname decision and an IP/CIDR peer decision, rejects any unauthorized DNS answer, applies explicit denials first and passes a numeric destination to its dialer. A literal IP additionally requires `allow_direct` on its IP/CIDR approval. Migration 17 defaults that field to false for all existing decisions. Invalid policy, an empty grant set, an unavailable policy source or resolver, and audit sink failure deny the dial. This library does not own a network namespace, bind an opaque broker handle to a task, intercept subprocess sockets or verify HTTP redirect/proxy paths. Its audit callback is a required interface; a production redacted audit store and gateway transport remain to be built.
 
 Control-plane LLM provider calls and configured MCP infrastructure must use separately named service identities and narrowly scoped exemptions. An exemption for `host.docker.internal` or a proxy must not become general executor access to the Docker host, PostgreSQL, management APIs or private networks. A missing broker, stale policy, resolver failure or unsupported sandbox feature is an operator-visible readiness failure and denies autonomous execution. Authorized local mock targets and approved self-hosted LLM endpoints need distinct test cases.
 
