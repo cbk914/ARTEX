@@ -31,6 +31,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+# Migration checksums hash embedded file bytes. A CRLF checkout changes every
+# checksum even when SQL is identical, so stop before producing an unusable image.
+RUN if LC_ALL=C grep -q "$(printf '\r')" db/migrations/*.sql; then \
+      echo "migration SQL contains CR bytes; checkout migration files with LF" >&2; \
+      exit 1; \
+    fi
 # Reuse the frontend built above; build.sh skips its own frontend step.
 COPY --from=web /src/web/out ./server/webui/dist
 ARG ARTEX_VERSION=dev

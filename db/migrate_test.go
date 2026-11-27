@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -11,6 +12,25 @@ import (
 	"testing/fstest"
 	"time"
 )
+
+func TestEmbeddedMigrationsUseStableLF(t *testing.T) {
+	entries, err := fs.ReadDir(migrationsFS(), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		content, err := fs.ReadFile(migrationsFS(), entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(content, []byte("\r")) {
+			t.Errorf("embedded migration %s contains CR bytes; check .gitattributes and rebuild from LF files", entry.Name())
+		}
+	}
+}
 
 func TestLoadMigrationsValidation(t *testing.T) {
 	ms, err := loadMigrations(fstest.MapFS{
