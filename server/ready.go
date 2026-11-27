@@ -63,15 +63,20 @@ func (c *readyCache) check(ctx context.Context, ping func(context.Context) error
 	return ready
 }
 
-// ready reports PostgreSQL reachability without exposing connection details.
+// ready reports PostgreSQL reachability and rejects an explicitly degraded
+// control-plane isolation self-test. It does not assert a campaign boundary:
+// the shared executor remains a separate, unresolved security limitation.
 // Its cached ping is bounded to one second and never runs application work.
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
-	ready := s.readyPG.check(r.Context(), func(ctx context.Context) error {
-		if s.m == nil || s.m.pg == nil {
-			return errNoPostgres
-		}
-		return s.m.pg.PingContext(ctx)
-	})
+	ready := s.isolation.Mode != IsolationDegraded
+	if ready {
+		ready = s.readyPG.check(r.Context(), func(ctx context.Context) error {
+			if s.m == nil || s.m.pg == nil {
+				return errNoPostgres
+			}
+			return s.m.pg.PingContext(ctx)
+		})
+	}
 	status := http.StatusServiceUnavailable
 	if ready {
 		status = http.StatusOK

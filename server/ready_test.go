@@ -129,6 +129,23 @@ func TestReadyClosedDatabaseReturnsUnavailable(t *testing.T) {
 	assertReadyResponse(t, readyRequest(s.Handler(), http.MethodGet, "/api/ready"), http.StatusServiceUnavailable, false)
 }
 
+func TestReadyRejectsDegradedIsolation(t *testing.T) {
+	var pings atomic.Int32
+	s, _ := newReadyServer(t, func(context.Context) error {
+		pings.Add(1)
+		return nil
+	})
+	s.isolation = IsolationStatus{Mode: IsolationDegraded, CampaignBoundary: CampaignBoundaryShared, Reason: "synthetic failed self-test"}
+	h := s.Handler()
+	assertReadyResponse(t, readyRequest(h, http.MethodGet, "/api/ready"), http.StatusServiceUnavailable, false)
+	if got := pings.Load(); got != 0 {
+		t.Fatalf("degraded readiness probed database %d times", got)
+	}
+	if got := readyRequest(h, http.MethodGet, "/api/health"); got.Code != http.StatusOK {
+		t.Fatalf("liveness changed with degraded isolation: %d", got.Code)
+	}
+}
+
 func TestReadyPingTimeout(t *testing.T) {
 	var cache readyCache
 	started := make(chan struct{})
