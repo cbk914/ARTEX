@@ -14,9 +14,26 @@ const testImage = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 type fakeEngine struct {
 	created, started, verified, executed, delivered, removed int
+	volumesCreated, volumesRemoved                           int
 	failure                                                  string
 	failRemove                                               bool
 	lastInput                                                []byte
+}
+
+func (f *fakeEngine) CreateUploadVolume(_ context.Context, spec Spec) (string, error) {
+	f.volumesCreated++
+	if f.failure == "volume-create" {
+		return "", errors.New("uncertain Docker volume creation")
+	}
+	return uploadVolumeName(spec)
+}
+func (f *fakeEngine) VerifyUploadVolume(context.Context, Spec) error { return nil }
+func (f *fakeEngine) RemoveUploadVolume(context.Context, Spec) error {
+	f.volumesRemoved++
+	if f.failure == "volume-remove" {
+		return errors.New("volume removal failure")
+	}
+	return nil
 }
 
 type testJournal struct {
@@ -68,11 +85,58 @@ func TestBrokerJournalsBeforeCreateAndForgetsAfterRemove(t *testing.T) {
 	if len(j.forgot) != 0 {
 		t.Fatal("forgot intent before container removal")
 	}
+	if e.volumesCreated != 1 {
+		t.Fatalf("journaled sandbox did not create one upload volume: %d", e.volumesCreated)
+	}
 	if err := b.Remove(context.Background(), handle); err != nil {
 		t.Fatal(err)
 	}
-	if e.removed != 1 || len(j.forgot) != 1 || j.forgot[0] != j.recorded[0] {
+	if e.removed != 1 || e.volumesRemoved != 1 || len(j.forgot) != 1 || j.forgot[0] != j.recorded[0] {
 		t.Fatalf("journal lifecycle mismatch: removed=%d, journal=%+v", e.removed, j)
+	}
+}
+
+func TestBrokerVolumeCreationFailureKeepsRecoveryIntent(t *testing.T) {
+	j := &testJournal{}
+	e := &fakeEngine{failure: "volume-create"}
+	b, err := NewWithJournal(e, testImage, strings.Repeat("f", 32), j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Create(context.Background(), 1); err == nil {
+		t.Fatal("accepted uncertain volume creation")
+	}
+	if e.created != 0 || len(j.recorded) != 1 || len(j.forgot) != 0 {
+		t.Fatalf("unsafe creation lifecycle: engine=%+v journal=%+v", e, j)
+	}
+	if _, err := b.Create(context.Background(), 2); err == nil || e.volumesCreated != 1 {
+		t.Fatal("accepted another sandbox before broker recovery")
+	}
+}
+
+func TestBrokerRetriesUploadVolumeRemovalWithoutRemovingContainerTwice(t *testing.T) {
+	j := &testJournal{}
+	e := &fakeEngine{failure: "volume-remove"}
+	b, err := NewWithJournal(e, testImage, strings.Repeat("f", 32), j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := b.Create(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Remove(context.Background(), handle); err == nil {
+		t.Fatal("accepted failed volume removal")
+	}
+	if e.removed != 1 || len(j.forgot) != 0 {
+		t.Fatal("forgot recovery intent or skipped container removal")
+	}
+	e.failure = ""
+	if err := b.Remove(context.Background(), handle); err != nil {
+		t.Fatal(err)
+	}
+	if e.removed != 1 || e.volumesRemoved != 2 || len(j.forgot) != 1 {
+		t.Fatalf("bad retry lifecycle: engine=%+v journal=%+v", e, j)
 	}
 }
 

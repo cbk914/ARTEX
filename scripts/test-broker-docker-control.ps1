@@ -44,6 +44,7 @@ try {
     docker image inspect $BrokerImage | Out-Null
     Assert-Exit 'inspect local broker image'
     $baseline = @(docker ps -a --format '{{.ID}}' --filter label=org.artex.sandbox.token)
+    $uploadBaseline = @(docker volume ls --filter label=org.artex.sandbox.token --format '{{.Name}}')
 
     docker volume create --label org.artex.test=broker-docker-control $socketVolume | Out-Null
     Assert-Exit 'create private socket volume'
@@ -146,21 +147,42 @@ try {
     $children = @(NewSandboxIDs $baseline)
     if ($children.Count -ne 2) { throw "expected two owned sandboxes; found $($children.Count)" }
     $owners = @()
+    $uploadVolumes = @()
     foreach ($id in $children) {
         $info = @(docker inspect $id | ConvertFrom-Json)[0]
         $owner = $info.Config.Labels.'org.artex.sandbox.owner'
         if ($owner -notmatch '^[a-f0-9]{32}$') { throw "sandbox $id lacks a valid broker owner" }
         $owners += $owner
+        $uploadMounts = @($info.Mounts | Where-Object Destination -eq '/campaign/main/uploads')
+        if ($uploadMounts.Count -ne 1 -or $uploadMounts[0].Type -ne 'volume' -or
+            $uploadMounts[0].RW -or $uploadMounts[0].Name -notmatch '^artex-upload-[a-f0-9]{32}$') {
+            throw "sandbox $id lacks one private read-only upload volume"
+        }
+        $uploadVolumes += $uploadMounts[0].Name
+        $volumeInfo = @(docker volume inspect $uploadMounts[0].Name | ConvertFrom-Json)[0]
+        if ($volumeInfo.Labels.'org.artex.sandbox.owner' -ne $owner -or
+            $volumeInfo.Labels.'org.artex.sandbox.token' -ne $info.Config.Labels.'org.artex.sandbox.token') {
+            throw "sandbox $id upload volume ownership does not match"
+        }
         if ($info.HostConfig.NetworkMode -ne 'none' -or -not $info.HostConfig.ReadonlyRootfs -or
             $info.Config.User -ne '10001:10001' -or
-            @($info.Mounts | Where-Object Type -ne 'tmpfs').Count -ne 0) {
+            @($info.Mounts | Where-Object { $_.Type -ne 'tmpfs' -and $_.Destination -ne '/campaign/main/uploads' }).Count -ne 0) {
             throw "sandbox $id violated isolation policy"
         }
     }
     if (@($owners | Select-Object -Unique).Count -ne 1) { throw 'campaign sandboxes have different broker owners' }
+    if (@($uploadVolumes | Select-Object -Unique).Count -ne 2) { throw 'campaigns shared an upload volume' }
+
+    $uploadReadOnly = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" '{"command":"test ! -w /campaign/main/uploads && test ! -e /campaign/main/uploads/marker && printf uploads-private"}' | ConvertFrom-Json
+    if ($uploadReadOnly.output -ne 'uploads-private') { throw 'campaign upload volume is writable or unexpectedly populated' }
 
     Invoke-Broker 'DELETE' "/v1/sandboxes/$($first.handle)" | Out-Null
     if (@(NewSandboxIDs $baseline).Count -ne 1) { throw 'explicit removal left an unexpected sandbox count' }
+    $remainingUploads = @(docker volume ls --filter 'name=^artex-upload-' --format '{{.Name}}' |
+        Where-Object { $_ -in $uploadVolumes })
+    if ($remainingUploads.Count -ne 1) {
+        throw "explicit removal left $($remainingUploads.Count) campaign upload volumes"
+    }
     if ($FileToolSmoke) {
         $reused = Invoke-Broker 'POST' '/v1/sandboxes' '{"campaign_id":71}' | ConvertFrom-Json
         $empty = Invoke-Broker 'POST' "/v1/sandboxes/$($reused.handle)/run" '{"command":"test ! -e /campaign/main/private.txt && test ! -e /campaign/i3/private.txt && printf clean"}' | ConvertFrom-Json
@@ -170,6 +192,14 @@ try {
     docker stop --time=80 $brokerName | Out-Null
     Assert-Exit 'graceful broker stop'
     if (@(NewSandboxIDs $baseline).Count -ne 0) { throw 'broker shutdown left an owned sandbox' }
+    foreach ($name in $uploadVolumes) {
+        if (@(docker volume ls --filter "name=^$name$" --format '{{.Name}}').Count -ne 0) {
+            throw "broker shutdown left upload volume $name"
+        }
+    }
+    $leftoverUploads = @(docker volume ls --filter label=org.artex.sandbox.token --format '{{.Name}}' |
+        Where-Object { $_ -and $_ -notin $uploadBaseline })
+    if ($leftoverUploads.Count -ne 0) { throw 'broker shutdown left a disposable campaign upload volume' }
     docker run --rm --pull=never --network none --user 0:0 `
         --mount "type=volume,src=$socketVolume,dst=/run/artex-broker" `
         --tmpfs /app/data:rw,nosuid,nodev,noexec,size=1m `

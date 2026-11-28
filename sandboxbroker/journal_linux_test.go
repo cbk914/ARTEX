@@ -101,6 +101,58 @@ func TestRecoverRecordedMissingContainerClearsIntent(t *testing.T) {
 	}
 }
 
+func TestRecoverRecordedRemovesOrphanedOwnedUploadVolume(t *testing.T) {
+	j, spec := journalFixture(t)
+	spec.UploadVolume = true
+	if err := j.Record(spec); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := uploadVolumeName(spec)
+	r := &recordingRunner{responses: map[string][]byte{
+		"ps":             nil,
+		"volume ls":      []byte(name + "\n"),
+		"volume inspect": uploadVolumeInspect(t, spec, map[string]string{ownershipLabel: spec.Token, ownerLabel: spec.Owner}),
+	}}
+	d := &DockerEngine{runner: r}
+	if err := d.RecoverRecorded(context.Background(), j, testImage); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := j.Entries()
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("orphan intent remains: %v %v", entries, err)
+	}
+	if len(r.calls) != 4 || r.calls[3][0] != "volume" || r.calls[3][1] != "rm" || r.calls[3][2] != name {
+		t.Fatalf("orphan volume was not safely removed: %v", r.calls)
+	}
+}
+
+func TestRecoverRecordedPreservesForeignUploadVolume(t *testing.T) {
+	j, spec := journalFixture(t)
+	spec.UploadVolume = true
+	if err := j.Record(spec); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := uploadVolumeName(spec)
+	r := &recordingRunner{responses: map[string][]byte{
+		"ps":             nil,
+		"volume ls":      []byte(name + "\n"),
+		"volume inspect": uploadVolumeInspect(t, spec, map[string]string{ownershipLabel: strings.Repeat("f", 64), ownerLabel: spec.Owner}),
+	}}
+	d := &DockerEngine{runner: r}
+	if err := d.RecoverRecorded(context.Background(), j, testImage); err == nil {
+		t.Fatal("forgot intent for foreign volume")
+	}
+	entries, err := j.Entries()
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("lost recovery intent: %v %v", entries, err)
+	}
+	for _, call := range r.calls {
+		if len(call) > 1 && call[0] == "volume" && call[1] == "rm" {
+			t.Fatalf("removed foreign volume: %v", call)
+		}
+	}
+}
+
 func TestRecoverRecordedRequiresFullAttestation(t *testing.T) {
 	for _, foreign := range []bool{false, true} {
 		t.Run(map[bool]string{false: "owned stopped", true: "foreign token"}[foreign], func(t *testing.T) {

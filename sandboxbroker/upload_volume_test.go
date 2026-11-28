@@ -22,7 +22,7 @@ func uploadVolumeInspect(t *testing.T, spec Spec, labels map[string]string) []by
 func TestUploadVolumeLifecycleRequiresOwnership(t *testing.T) {
 	spec := uploadVolumeSpec()
 	name, _ := uploadVolumeName(spec)
-	r := &recordingRunner{responses: map[string][]byte{"volume": uploadVolumeInspect(t, spec, map[string]string{ownershipLabel: spec.Token, ownerLabel: spec.Owner})}}
+	r := &recordingRunner{responses: map[string][]byte{"volume inspect": uploadVolumeInspect(t, spec, map[string]string{ownershipLabel: spec.Token, ownerLabel: spec.Owner}), "volume ls": []byte(name + "\n")}}
 	d := &DockerEngine{runner: r}
 	got, err := d.CreateUploadVolume(context.Background(), spec)
 	if err != nil || got != name {
@@ -31,7 +31,7 @@ func TestUploadVolumeLifecycleRequiresOwnership(t *testing.T) {
 	if err := d.RemoveUploadVolume(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.calls) != 4 || !contains(r.calls[0], "--driver=local") || !contains(r.calls[0], "--label="+ownershipLabel+"="+spec.Token) || !contains(r.calls[0], "--label="+ownerLabel+"="+spec.Owner) || r.calls[0][len(r.calls[0])-1] != name || r.calls[3][1] != "rm" || r.calls[3][2] != name {
+	if len(r.calls) != 5 || !contains(r.calls[0], "--driver=local") || !contains(r.calls[0], "--label="+ownershipLabel+"="+spec.Token) || !contains(r.calls[0], "--label="+ownerLabel+"="+spec.Owner) || r.calls[0][len(r.calls[0])-1] != name || r.calls[4][1] != "rm" || r.calls[4][2] != name {
 		t.Fatalf("unexpected volume lifecycle calls: %v", r.calls)
 	}
 }
@@ -51,12 +51,12 @@ func TestUploadVolumeNeverRemovesForeignOrAlteredVolume(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			name, _ := uploadVolumeName(spec)
 			info := map[string]any{"Name": name, "Driver": "local", "Scope": "local", "Labels": tc.labels, "Options": tc.options}
-			r := &recordingRunner{responses: map[string][]byte{"volume": jsonArray(t, info)}}
+			r := &recordingRunner{responses: map[string][]byte{"volume inspect": jsonArray(t, info), "volume ls": []byte(name + "\n")}}
 			d := &DockerEngine{runner: r}
 			if err := d.RemoveUploadVolume(context.Background(), spec); err == nil {
 				t.Fatal("removed volume without matching ownership and policy")
 			}
-			if len(r.calls) != 1 || r.calls[0][1] != "inspect" {
+			if len(r.calls) != 2 || r.calls[0][1] != "ls" || r.calls[1][1] != "inspect" {
 				t.Fatalf("unexpected Docker calls: %v", r.calls)
 			}
 		})
@@ -67,13 +67,25 @@ func TestUploadVolumeCreateCollisionDoesNotDeleteForeignVolume(t *testing.T) {
 	spec := uploadVolumeSpec()
 	name, _ := uploadVolumeName(spec)
 	foreign := map[string]string{ownershipLabel: strings.Repeat("d", 64), ownerLabel: spec.Owner}
-	r := &recordingRunner{responses: map[string][]byte{"volume": uploadVolumeInspect(t, spec, foreign)}}
+	r := &recordingRunner{responses: map[string][]byte{"volume inspect": uploadVolumeInspect(t, spec, foreign)}}
 	d := &DockerEngine{runner: r}
 	if _, err := d.CreateUploadVolume(context.Background(), spec); err == nil {
 		t.Fatal("accepted pre-existing foreign volume")
 	}
 	if len(r.calls) != 2 || r.calls[0][1] != "create" || r.calls[1][1] != "inspect" || r.calls[1][2] != name {
 		t.Fatalf("unexpected Docker calls after foreign volume collision: %v", r.calls)
+	}
+}
+
+func TestUploadVolumeRemovalAfterCrashIsIdempotent(t *testing.T) {
+	spec := uploadVolumeSpec()
+	r := &recordingRunner{responses: map[string][]byte{"volume ls": nil}}
+	d := &DockerEngine{runner: r}
+	if err := d.RemoveUploadVolume(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.calls) != 1 || r.calls[0][1] != "ls" {
+		t.Fatalf("missing volume triggered another Docker operation: %v", r.calls)
 	}
 }
 

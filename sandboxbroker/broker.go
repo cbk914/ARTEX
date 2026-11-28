@@ -23,7 +23,10 @@ const DefaultSandboxLimit = 8
 // MaxSandboxLimit is the fixed upper bound for the startup setting.
 const MaxSandboxLimit = 64
 
-type Spec struct{ Name, Image, Token, Owner string }
+type Spec struct {
+	Name, Image, Token, Owner string
+	UploadVolume              bool
+}
 
 // CommandExitError reports a completed sandbox command's nonzero exit status.
 // It carries no output or Docker diagnostics; callers receive output separately.
@@ -43,6 +46,9 @@ type Engine interface {
 	ExecInput(context.Context, string, string, []byte) (string, error)
 	PutArtifact(context.Context, string, string, []byte) error
 	Remove(context.Context, string) error
+	CreateUploadVolume(context.Context, Spec) (string, error)
+	VerifyUploadVolume(context.Context, Spec) error
+	RemoveUploadVolume(context.Context, Spec) error
 }
 
 // Journal durably records creation intent before Docker can create a sandbox.
@@ -53,11 +59,12 @@ type Journal interface {
 }
 
 type sandbox struct {
-	campaignID int64
-	container  string
-	spec       Spec
-	opMu       sync.Mutex
-	poisoned   bool
+	campaignID       int64
+	container        string
+	spec             Spec
+	opMu             sync.Mutex
+	poisoned         bool
+	containerRemoved bool
 }
 type Broker struct {
 	engine         Engine
@@ -142,11 +149,15 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 	if err != nil {
 		return "", err
 	}
-	spec := Spec{Name: "artex-campaign-" + nameID, Image: b.image, Token: token, Owner: b.owner}
+	spec := Spec{Name: "artex-campaign-" + nameID, Image: b.image, Token: token, Owner: b.owner, UploadVolume: true}
 	if b.journal != nil {
 		if err := b.journal.Record(spec); err != nil {
 			return "", fmt.Errorf("record sandbox intent: %w", err)
 		}
+	}
+	if _, err := b.engine.CreateUploadVolume(ctx, spec); err != nil {
+		b.creationUnsafe = true
+		return "", fmt.Errorf("create campaign upload volume: %w", err)
 	}
 	container, err := b.engine.Create(ctx, spec)
 	if err != nil {
@@ -163,6 +174,9 @@ func (b *Broker) Create(ctx context.Context, campaignID int64) (_ string, err er
 			if cleanupErr := b.engine.Remove(cleanupCtx, container); cleanupErr != nil {
 				b.creationUnsafe = true
 				err = errors.Join(err, fmt.Errorf("remove failed sandbox %s: %w", container, cleanupErr))
+			} else if cleanupErr := b.engine.RemoveUploadVolume(cleanupCtx, spec); cleanupErr != nil {
+				b.creationUnsafe = true
+				err = errors.Join(err, fmt.Errorf("remove failed upload volume: %w", cleanupErr))
 			} else if b.journal != nil {
 				if forgetErr := b.journal.Forget(spec); forgetErr != nil {
 					b.creationUnsafe = true
@@ -193,9 +207,16 @@ func (b *Broker) Remove(ctx context.Context, handle string) error {
 		return err
 	}
 	defer s.opMu.Unlock()
-	if err := b.engine.Remove(ctx, s.container); err != nil {
+	if !s.containerRemoved {
+		if err := b.engine.Remove(ctx, s.container); err != nil {
+			s.poisoned = true
+			return fmt.Errorf("remove sandbox: %w", err)
+		}
+		s.containerRemoved = true
+	}
+	if err := b.engine.RemoveUploadVolume(ctx, s.spec); err != nil {
 		s.poisoned = true
-		return fmt.Errorf("remove sandbox: %w", err)
+		return fmt.Errorf("remove campaign upload volume: %w", err)
 	}
 	var journalErr error
 	if b.journal != nil {
@@ -254,8 +275,14 @@ func (b *Broker) retireLocked(handle string, s *sandbox) error {
 	s.poisoned = true
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := b.engine.Remove(cleanupCtx, s.container); err != nil {
-		return fmt.Errorf("retire unsafe sandbox: %w", err)
+	if !s.containerRemoved {
+		if err := b.engine.Remove(cleanupCtx, s.container); err != nil {
+			return fmt.Errorf("retire unsafe sandbox: %w", err)
+		}
+		s.containerRemoved = true
+	}
+	if err := b.engine.RemoveUploadVolume(cleanupCtx, s.spec); err != nil {
+		return fmt.Errorf("retire unsafe sandbox upload volume: %w", err)
 	}
 	var journalErr error
 	if b.journal != nil {

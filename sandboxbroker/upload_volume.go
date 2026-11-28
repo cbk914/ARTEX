@@ -24,6 +24,27 @@ type uploadVolumeInfo struct {
 	Options map[string]string `json:"Options"`
 }
 
+// uploadVolumePresent checks the exact random name before any operation that
+// must tolerate a crash between volume deletion and journal deletion.
+func (d *DockerEngine) uploadVolumePresent(ctx context.Context, spec Spec) (bool, error) {
+	name, err := uploadVolumeName(spec)
+	if err != nil {
+		return false, err
+	}
+	output, err := d.runner.Run(ctx, "volume", "ls", "--filter=name=^"+name+"$", "--format={{.Name}}")
+	if err != nil {
+		return false, err
+	}
+	listed := strings.Fields(string(output))
+	if len(listed) == 0 {
+		return false, nil
+	}
+	if len(listed) != 1 || listed[0] != name {
+		return false, errors.New("ambiguous campaign upload volume name")
+	}
+	return true, nil
+}
+
 // VerifyUploadVolume refuses to infer ownership from a Docker volume name.
 // The token and installation owner must both match the journaled sandbox spec.
 func (d *DockerEngine) VerifyUploadVolume(ctx context.Context, spec Spec) error {
@@ -68,6 +89,10 @@ func (d *DockerEngine) CreateUploadVolume(ctx context.Context, spec Spec) (strin
 func (d *DockerEngine) RemoveUploadVolume(ctx context.Context, spec Spec) error {
 	name, err := uploadVolumeName(spec)
 	if err != nil {
+		return err
+	}
+	present, err := d.uploadVolumePresent(ctx, spec)
+	if err != nil || !present {
 		return err
 	}
 	if err := d.VerifyUploadVolume(ctx, spec); err != nil {

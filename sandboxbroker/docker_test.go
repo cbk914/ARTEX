@@ -37,6 +37,11 @@ func (r *recordingRunner) Run(_ context.Context, args ...string) ([]byte, error)
 		return nil, errors.New("synthetic docker failure")
 	}
 	output := r.responses[args[0]]
+	if len(args) > 1 {
+		if scoped, ok := r.responses[args[0]+" "+args[1]]; ok {
+			output = scoped
+		}
+	}
 	if args[0] == "exec" && contains(args, dockerExecWrapper) && !r.omitMarker {
 		marker := args[len(args)-1]
 		output = append(append([]byte(nil), output...), []byte(fmt.Sprintf("\n%s:%d\n", marker, r.exitCode))...)
@@ -87,6 +92,25 @@ func TestDockerCreateUsesFixedPolicy(t *testing.T) {
 	}
 	if args[len(args)-3] != testImage || args[len(args)-2] != "-c" || !strings.Contains(args[len(args)-1], "exec sleep infinity") {
 		t.Fatal("unexpected image or command")
+	}
+}
+
+func TestDockerCreateMountsOnlyAttestedReadOnlyUploadVolume(t *testing.T) {
+	spec := uploadVolumeSpec()
+	spec.UploadVolume = true
+	name, _ := uploadVolumeName(spec)
+	id := strings.Repeat("d", 64)
+	r := &recordingRunner{responses: map[string][]byte{
+		"volume inspect": uploadVolumeInspect(t, spec, map[string]string{ownershipLabel: spec.Token, ownerLabel: spec.Owner}),
+		"create":         []byte(id + "\n"),
+	}}
+	d := &DockerEngine{runner: r}
+	got, err := d.Create(context.Background(), spec)
+	if err != nil || got != id {
+		t.Fatalf("create with upload mount = %q, %v", got, err)
+	}
+	if len(r.calls) != 2 || !contains(r.calls[1], "--mount=type=volume,src="+name+",dst=/campaign/main/uploads,readonly") || !contains(r.calls[1], "--tmpfs=/campaign/main:rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700") {
+		t.Fatalf("missing verified read-only upload mount: %v", r.calls)
 	}
 }
 
@@ -279,6 +303,40 @@ func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 				delete(host, tc.name)
 			}
 		})
+	}
+	spec.UploadVolume = true
+	tmpfs["/campaign/main"] = "rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700"
+	name, _ := uploadVolumeName(spec)
+	host["Mounts"] = []any{map[string]any{"Type": "volume", "Source": name, "Target": "/campaign/main/uploads", "ReadOnly": true}}
+	r.responses["volume inspect"] = uploadVolumeInspect(t, spec, map[string]string{ownershipLabel: spec.Token, ownerLabel: spec.Owner})
+	mount := map[string]any{"Type": "volume", "Name": name, "Destination": "/campaign/main/uploads", "RW": false}
+	base["Mounts"] = []any{mount}
+	r.responses["inspect"] = jsonArray(t, base)
+	if err := d.Verify(context.Background(), id, spec); err != nil {
+		t.Fatalf("valid read-only campaign upload mount rejected: %v", err)
+	}
+	mount["RW"] = true
+	r.responses["inspect"] = jsonArray(t, base)
+	if err := d.Verify(context.Background(), id, spec); err == nil {
+		t.Fatal("accepted writable campaign upload mount")
+	}
+	mount["RW"] = false
+	mount["Name"] = "foreign-volume"
+	r.responses["inspect"] = jsonArray(t, base)
+	if err := d.Verify(context.Background(), id, spec); err == nil {
+		t.Fatal("accepted foreign campaign upload mount")
+	}
+	base["Mounts"] = []any{}
+	r.responses["inspect"] = jsonArray(t, base)
+	if err := d.Verify(context.Background(), id, spec); err == nil {
+		t.Fatal("accepted missing campaign upload mount")
+	}
+	base["Mounts"] = []any{mount}
+	mount["Name"] = name
+	host["Mounts"] = []any{map[string]any{"Type": "volume", "Source": name, "Target": "/campaign/main/uploads", "ReadOnly": false}}
+	r.responses["inspect"] = jsonArray(t, base)
+	if err := d.Verify(context.Background(), id, spec); err == nil {
+		t.Fatal("accepted writable upload mount declaration")
 	}
 }
 

@@ -161,6 +161,11 @@ func (d *DockerEngine) RecoverRecorded(ctx context.Context, j *FileJournal, imag
 		}
 		ids := strings.Fields(string(output))
 		if len(ids) == 0 {
+			if spec.UploadVolume {
+				if err := d.RemoveUploadVolume(ctx, spec); err != nil {
+					return fmt.Errorf("remove orphaned upload volume for %s: %w", spec.Name, err)
+				}
+			}
 			if err := j.Forget(spec); err != nil {
 				return err
 			}
@@ -174,6 +179,11 @@ func (d *DockerEngine) RecoverRecorded(ctx context.Context, j *FileJournal, imag
 		}
 		if err := d.Remove(ctx, ids[0]); err != nil {
 			return fmt.Errorf("remove journaled sandbox %s: %w", spec.Name, err)
+		}
+		if spec.UploadVolume {
+			if err := d.RemoveUploadVolume(ctx, spec); err != nil {
+				return fmt.Errorf("remove journaled upload volume for %s: %w", spec.Name, err)
+			}
 		}
 		if err := j.Forget(spec); err != nil {
 			return err

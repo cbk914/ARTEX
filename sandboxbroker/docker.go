@@ -238,11 +238,27 @@ func (d *DockerEngine) Create(ctx context.Context, spec Spec) (string, error) {
 		"--tmpfs=/artifacts:rw,nosuid,nodev,noexec,size=64m,uid=0,gid=0,mode=0755",
 		"--tmpfs=/app/data:rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700",
 		"--tmpfs=/app/keys:rw,nosuid,nodev,noexec,size=1m,uid=10001,gid=10001,mode=0700",
+	}
+	if spec.UploadVolume {
+		name, err := uploadVolumeName(spec)
+		if err != nil {
+			return "", err
+		}
+		if err := d.VerifyUploadVolume(ctx, spec); err != nil {
+			return "", err
+		}
+		// Docker creates a nested mount's parent as root otherwise, leaving
+		// /campaign/main unwritable to the fixed non-root executor.
+		args = append(args,
+			"--tmpfs=/campaign/main:rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=0700",
+			"--mount=type=volume,src="+name+",dst=/campaign/main/uploads,readonly")
+	}
+	args = append(args,
 		"--env=HOME=/campaign", "--env=TMPDIR=/tmp", "--env=XDG_CONFIG_HOME=/campaign/.config",
 		"--env=XDG_CACHE_HOME=/campaign/.cache", "--env=XDG_DATA_HOME=/campaign/.local/share",
 		"--env=XDG_STATE_HOME=/campaign/.local/state", "--env=XDG_RUNTIME_DIR=/campaign/.run",
 		"--entrypoint=/bin/sh", spec.Image, "-c", "mkdir -p /campaign/.config /campaign/.cache /campaign/.local/share /campaign/.local/state /campaign/.run && chmod 0700 /campaign/.run && exec sleep infinity",
-	}
+	)
 	output, err := d.runner.Run(ctx, args...)
 	if err != nil {
 		return "", errors.Join(err, d.cleanupOwned(spec))
@@ -371,12 +387,20 @@ type containerInfo struct {
 		PidsLimit      int64                      `json:"PidsLimit"`
 		NanoCpus       int64                      `json:"NanoCpus"`
 		Binds          []string                   `json:"Binds"`
-		Tmpfs          map[string]string          `json:"Tmpfs"`
-		Privileged     bool                       `json:"Privileged"`
+		Mounts         []struct {
+			Type     string `json:"Type"`
+			Source   string `json:"Source"`
+			Target   string `json:"Target"`
+			ReadOnly bool   `json:"ReadOnly"`
+		} `json:"Mounts"`
+		Tmpfs      map[string]string `json:"Tmpfs"`
+		Privileged bool              `json:"Privileged"`
 	} `json:"HostConfig"`
 	Mounts []struct {
 		Type        string `json:"Type"`
+		Name        string `json:"Name"`
 		Destination string `json:"Destination"`
+		RW          bool   `json:"RW"`
 	} `json:"Mounts"`
 	NetworkSettings struct {
 		Networks map[string]json.RawMessage `json:"Networks"`
@@ -404,6 +428,11 @@ func (d *DockerEngine) verify(ctx context.Context, id string, spec Spec, require
 	}
 	if err := d.CheckImage(ctx, spec.Image); err != nil {
 		return err
+	}
+	if spec.UploadVolume {
+		if err := d.VerifyUploadVolume(ctx, spec); err != nil {
+			return err
+		}
 	}
 	imageOutput, err := d.runner.Run(ctx, "image", "inspect", spec.Image)
 	if err != nil {
@@ -436,6 +465,14 @@ func (d *DockerEngine) verify(ctx context.Context, id string, spec Spec, require
 	if _, onlyNone := info.NetworkSettings.Networks["none"]; !onlyNone {
 		return errors.New("sandbox joined an unapproved network")
 	}
+	if spec.UploadVolume {
+		name, _ := uploadVolumeName(spec)
+		if len(h.Mounts) != 1 || h.Mounts[0].Type != "volume" || h.Mounts[0].Source != name || h.Mounts[0].Target != "/campaign/main/uploads" || !h.Mounts[0].ReadOnly {
+			return errors.New("sandbox upload mount declaration violates fixed isolation policy")
+		}
+	} else if len(h.Mounts) != 0 {
+		return errors.New("sandbox has unapproved mount declaration")
+	}
 	env := make(map[string]string, len(info.Config.Env))
 	for _, entry := range info.Config.Env {
 		key, value, ok := strings.Cut(entry, "=")
@@ -462,7 +499,11 @@ func (d *DockerEngine) verify(ctx context.Context, id string, spec Spec, require
 			return fmt.Errorf("sandbox environment %s violates private path policy", key)
 		}
 	}
-	if len(h.Tmpfs) != 5 {
+	wantTmpfs := 5
+	if spec.UploadVolume {
+		wantTmpfs++
+	}
+	if len(h.Tmpfs) != wantTmpfs {
 		return errors.New("sandbox tmpfs policy differs")
 	}
 	for path, size := range map[string]string{"/tmp": "size=64m", "/campaign": "size=128m", "/app/data": "size=1m", "/app/keys": "size=1m"} {
@@ -476,6 +517,17 @@ func (d *DockerEngine) verify(ctx context.Context, id string, spec Spec, require
 			}
 		}
 	}
+	if spec.UploadVolume {
+		options, ok := h.Tmpfs["/campaign/main"]
+		if !ok {
+			return errors.New("missing sandbox main tmpfs")
+		}
+		for _, required := range []string{"rw", "nosuid", "nodev", "noexec", "uid=10001", "gid=10001", "mode=0700", "size=128m"} {
+			if !contains(strings.Split(options, ","), required) {
+				return fmt.Errorf("sandbox main tmpfs lacks %q", required)
+			}
+		}
+	}
 	artifactOptions, ok := h.Tmpfs["/artifacts"]
 	if !ok {
 		return errors.New("missing sandbox artifacts tmpfs")
@@ -485,10 +537,22 @@ func (d *DockerEngine) verify(ctx context.Context, id string, spec Spec, require
 			return fmt.Errorf("sandbox artifacts tmpfs lacks %q", required)
 		}
 	}
+	uploadMounts := 0
 	for _, mount := range info.Mounts {
-		if mount.Type != "tmpfs" || (mount.Destination != "/tmp" && mount.Destination != "/campaign" && mount.Destination != "/artifacts" && mount.Destination != "/app/data" && mount.Destination != "/app/keys") {
+		if spec.UploadVolume && mount.Destination == "/campaign/main/uploads" {
+			name, _ := uploadVolumeName(spec)
+			if mount.Type != "volume" || mount.Name != name || mount.RW {
+				return errors.New("campaign upload mount violates fixed isolation policy")
+			}
+			uploadMounts++
+			continue
+		}
+		if mount.Type != "tmpfs" || (mount.Destination != "/tmp" && mount.Destination != "/campaign" && mount.Destination != "/artifacts" && mount.Destination != "/app/data" && mount.Destination != "/app/keys" && !(spec.UploadVolume && mount.Destination == "/campaign/main")) {
 			return fmt.Errorf("unapproved sandbox mount %q (%s)", mount.Destination, mount.Type)
 		}
+	}
+	if spec.UploadVolume && uploadMounts != 1 {
+		return errors.New("campaign upload mount missing or duplicated")
 	}
 	return nil
 }
