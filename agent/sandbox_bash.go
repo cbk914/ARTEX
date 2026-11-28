@@ -85,7 +85,7 @@ func (t *sandboxBashTool) Call(ctx context.Context, input json.RawMessage, tc *a
 			if strings.TrimSpace(output) == "" {
 				output = "(no output)"
 			}
-			captured, captureErr := captureSandboxOutput(ctx, t.runner, info, output, tc)
+			captured, captureErr := CaptureSandboxOutput(ctx, t.runner, info, output, tc)
 			if captureErr != nil {
 				return actool.Errorf(fmt.Sprintf("Error: task sandbox output storage failed: %v", captureErr)), nil
 			}
@@ -96,14 +96,16 @@ func (t *sandboxBashTool) Call(ctx context.Context, input json.RawMessage, tc *a
 	if strings.TrimSpace(output) == "" {
 		output = "(command produced no output)"
 	}
-	captured, captureErr := captureSandboxOutput(ctx, t.runner, info, output, tc)
+	captured, captureErr := CaptureSandboxOutput(ctx, t.runner, info, output, tc)
 	if captureErr != nil {
 		return actool.Errorf(fmt.Sprintf("Error: task sandbox output storage failed: %v", captureErr)), nil
 	}
 	return actool.Text(captured), nil
 }
 
-func captureSandboxOutput(ctx context.Context, runner TaskShellRunner, info RunInfo, output string, tc *actool.ToolContext) (string, error) {
+// CaptureSandboxOutput preserves large task output only inside its private
+// campaign artifact store. It never writes to the host SDK spill directory.
+func CaptureSandboxOutput(ctx context.Context, runner TaskShellRunner, info RunInfo, output string, tc *actool.ToolContext) (string, error) {
 	limit := actool.MaxOutput(tc)
 	if len(output) <= limit {
 		return output, nil

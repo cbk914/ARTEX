@@ -473,11 +473,19 @@ func (s *Server) runCommandTool(ctx context.Context, key string, execRaw json.Ra
 				if strings.TrimSpace(output) == "" {
 					output = "(no output)"
 				}
-				return actool.Errorf(fmt.Sprintf("%s\n\n[exit code %d]", actool.Capture(tc, output), exit.Code)), nil
+				captured, captureErr := agent.CaptureSandboxOutput(ctx, s.taskSandboxes, runInfo, output, tc)
+				if captureErr != nil {
+					return actool.Errorf("task sandbox output storage failed: " + captureErr.Error()), nil
+				}
+				return actool.Errorf(fmt.Sprintf("%s\n\n[exit code %d]", captured, exit.Code)), nil
 			}
 			return actool.Errorf("task sandbox command failed: " + err.Error()), nil
 		}
-		return actool.Text(actool.Capture(tc, output)), nil
+		captured, captureErr := agent.CaptureSandboxOutput(ctx, s.taskSandboxes, runInfo, output, tc)
+		if captureErr != nil {
+			return actool.Errorf("task sandbox output storage failed: " + captureErr.Error()), nil
+		}
+		return actool.Text(captured), nil
 	}
 	// Reuse the low-level run Bash also uses (via the Bash CoreTool.Call): it
 	// automatically inherits the safety floor/timeout/proxy env/output overflow. The tool is a peer of Bash sharing that low level, not routed through the Bash tool for the model to call.
@@ -523,11 +531,19 @@ func (s *Server) runScriptToolWithInterpreter(ctx context.Context, key string, s
 		if err != nil {
 			var exit *sandboxbroker.CommandExitError
 			if errors.As(err, &exit) {
-				return actool.Text(actool.Capture(tc, body+fmt.Sprintf("\n[exit code %d]", exit.Code))), nil
+				captured, captureErr := agent.CaptureSandboxOutput(ctx, s.taskSandboxes, runInfo, body, tc)
+				if captureErr != nil {
+					return actool.Errorf("task sandbox output storage failed: " + captureErr.Error()), nil
+				}
+				return actool.Text(captured + fmt.Sprintf("\n[exit code %d]", exit.Code)), nil
 			}
 			return actool.Errorf("task sandbox script failed: " + err.Error()), nil
 		}
-		return actool.Text(actool.Capture(tc, body)), nil
+		captured, captureErr := agent.CaptureSandboxOutput(ctx, s.taskSandboxes, runInfo, body, tc)
+		if captureErr != nil {
+			return actool.Errorf("task sandbox output storage failed: " + captureErr.Error()), nil
+		}
+		return actool.Text(captured), nil
 	}
 	workDir := s.m.dir
 	var sessionEnv []string

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 func TestScriptToolUsesTaskSandboxWithParameters(t *testing.T) {
@@ -72,6 +73,29 @@ func TestScriptToolPreservesSandboxExitOutput(t *testing.T) {
 	result, err := s.runScriptToolWithInterpreter(ctx, "fixture", scriptExec{Code: "raise SystemExit(7)"}, nil, nil, "python3")
 	if err != nil || !strings.Contains(result.Flatten(), "sandbox diagnostic") || !strings.Contains(result.Flatten(), "[exit code 7]") {
 		t.Fatalf("nonzero sandbox script = %q, %v", result.Flatten(), err)
+	}
+}
+
+func TestScriptToolKeepsLongOutputInsideTaskSandbox(t *testing.T) {
+	controller, _, backend, _ := newSandboxTestController(t)
+	outputDir := t.TempDir()
+	tc := &actool.ToolContext{OutputDir: outputDir, MaxOutputChars: 64}
+	backend.runOutput = strings.Repeat("p", actool.MaxOutput(tc)+1)
+	s := &Server{taskSandboxes: controller}
+	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{TaskID: 7, ExplorationID: 70})
+	result, err := s.runScriptToolWithInterpreter(ctx, "fixture", scriptExec{Code: "print('long')"}, nil, tc, "python3")
+	if err != nil || !strings.Contains(result.Flatten(), "/artifacts/output-") {
+		t.Fatalf("long script output was not captured privately: %q, %v", result.Flatten(), err)
+	}
+	backend.mu.Lock()
+	stored := len(backend.put)
+	backend.mu.Unlock()
+	if stored != 1 {
+		t.Fatalf("private artifacts stored: %d", stored)
+	}
+	entries, err := os.ReadDir(outputDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("host output spill found: %v, %v", entries, err)
 	}
 }
 

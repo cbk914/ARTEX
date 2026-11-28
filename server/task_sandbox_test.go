@@ -39,10 +39,12 @@ type sandboxBackendRecorder struct {
 	created     map[int64]int
 	ran         []string
 	put         []string
+	putFail     bool
 	uploaded    []string
 	uploadBytes []byte
 	lastInput   []byte
 	lastCommand string
+	runOutput   string
 	exitCode    int
 	removed     []string
 	removeFail  bool
@@ -78,7 +80,13 @@ func (b *sandboxBackendRecorder) Run(_ context.Context, handle, command string) 
 	defer b.mu.Unlock()
 	b.ran = append(b.ran, handle+":"+command)
 	if b.exitCode != 0 {
+		if b.runOutput != "" {
+			return b.runOutput, &sandboxbroker.CommandExitError{Code: b.exitCode}
+		}
 		return "sandbox diagnostic\n", &sandboxbroker.CommandExitError{Code: b.exitCode}
+	}
+	if b.runOutput != "" {
+		return b.runOutput, nil
 	}
 	return handle, nil
 }
@@ -90,7 +98,13 @@ func (b *sandboxBackendRecorder) RunInput(_ context.Context, handle, command str
 	b.lastInput = append([]byte(nil), input...)
 	b.lastCommand = command
 	if b.exitCode != 0 {
+		if b.runOutput != "" {
+			return b.runOutput, &sandboxbroker.CommandExitError{Code: b.exitCode}
+		}
 		return "sandbox diagnostic\n", &sandboxbroker.CommandExitError{Code: b.exitCode}
+	}
+	if b.runOutput != "" {
+		return b.runOutput, nil
 	}
 	return handle, nil
 }
@@ -98,6 +112,9 @@ func (b *sandboxBackendRecorder) RunInput(_ context.Context, handle, command str
 func (b *sandboxBackendRecorder) PutArtifact(_ context.Context, handle, name string, _ []byte) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.putFail {
+		return "", errors.New("synthetic private artifact failure")
+	}
 	b.put = append(b.put, handle+":"+name)
 	return "digest", nil
 }
