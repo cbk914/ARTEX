@@ -4512,6 +4512,17 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 409, "task sandbox unavailable for interactive turn")
 			return
 		}
+		if len(req.Attachments) != 0 {
+			info := agent.RunInfo{TaskID: maTaskID, ExplorationID: t.ExpID, Interactive: true}
+			if err := s.taskSandboxes.transferTaskChatAttachments(r.Context(), info, attachmentBaseDir, req.Attachments); err != nil {
+				if releaseErr := releaseInteractive(); releaseErr != nil {
+					log.Printf("[task-sandbox] failed attachment turn cleanup task=%s: %v", t.ID, releaseErr)
+				}
+				s.finishTaskChat(t.ID, cancel)
+				writeErr(w, 400, "invalid or changed attachment")
+				return
+			}
+		}
 	}
 
 	// Persist + broadcast the human turn so the main-agent orchestration session survives page
@@ -4551,6 +4562,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			mainDir := attachmentBaseDir
 			if mainDir == "" {
 				mainDir = agent.EnsureRunDir(s.m.dir, maTaskID, 0)
+			}
+			if s.taskSandboxes != nil {
+				mainDir = "/campaign/main"
 			}
 			agentMsg := composeAgentMessage(agentMessage, req.Attachments, mainDir)
 			// Tag the turn for the target gate: the task, the "mainagent" lane and the approval scope.

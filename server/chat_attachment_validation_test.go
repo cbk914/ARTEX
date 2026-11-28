@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Autumn-27/artex/agent"
 )
 
 func TestValidateChatAttachmentsCanonicalizesMetadata(t *testing.T) {
@@ -43,6 +45,77 @@ func TestValidateChatAttachmentsCanonicalizesMetadata(t *testing.T) {
 	legacy[0].SHA256 = strings.Repeat("0", 64)
 	if _, err := validateChatAttachments(context.Background(), base, legacy); err == nil {
 		t.Fatal("changed content accepted")
+	}
+}
+
+func TestTaskChatAttachmentTransferUsesTaskHandle(t *testing.T) {
+	c, _, backend, _ := newSandboxTestController(t)
+	base := t.TempDir()
+	uploads := filepath.Join(base, "uploads")
+	if err := os.Mkdir(uploads, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("synthetic attachment")
+	name := "análisis.txt"
+	if err := os.WriteFile(filepath.Join(uploads, name), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	attachments, err := validateChatAttachments(ctx, base, []chatAttachment{{Name: name, Path: "uploads/" + name, Size: int64(len(data))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := agent.RunInfo{TaskID: 7, ExplorationID: 70, Interactive: true}
+	if err := c.transferTaskChatAttachments(ctx, info, base, attachments); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.uploaded) != 1 || backend.uploaded[0] != "handle-7:"+name+":"+attachments[0].SHA256 || string(backend.uploadBytes) != string(data) {
+		t.Fatalf("attachment did not reach the task handle: %+v", backend.uploaded)
+	}
+}
+
+func TestTaskChatAttachmentManifestUsesSandboxPath(t *testing.T) {
+	message := composeAgentMessage("inspect", []chatAttachment{{Name: "report.txt", Path: "uploads/report.txt", Size: 4}}, "/campaign/main")
+	if !strings.Contains(message, "/campaign/main/uploads/report.txt") {
+		t.Fatalf("sandbox attachment path missing: %q", message)
+	}
+}
+
+func TestTaskChatAttachmentTransferRejectsChangedAndUnsupportedFiles(t *testing.T) {
+	c, _, backend, _ := newSandboxTestController(t)
+	base := t.TempDir()
+	uploads := filepath.Join(base, "uploads")
+	if err := os.Mkdir(uploads, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := "report.txt"
+	path := filepath.Join(uploads, name)
+	if err := os.WriteFile(path, []byte("safe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	attachments, err := validateChatAttachments(ctx, base, []chatAttachment{{Name: name, Path: "uploads/" + name, Size: 4}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := agent.RunInfo{TaskID: 7, ExplorationID: 70, Interactive: true}
+	if err := os.WriteFile(path, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.transferTaskChatAttachments(ctx, info, base, attachments); err == nil {
+		t.Fatal("changed attachment transferred")
+	}
+	attachments[0].Name = "bad\nname"
+	attachments[0].Path = "uploads/bad\nname"
+	if err := c.transferTaskChatAttachments(ctx, info, base, attachments); err == nil {
+		t.Fatal("unsupported attachment name transferred")
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.uploaded) != 0 {
+		t.Fatal("rejected attachment reached the broker")
 	}
 }
 

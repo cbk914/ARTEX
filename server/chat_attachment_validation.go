@@ -8,6 +8,9 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/sandboxbroker"
 )
 
 const maxChatAttachmentsPerMessage = 1024
@@ -95,4 +98,69 @@ func validateChatAttachments(ctx context.Context, baseDir string, attachments []
 		return nil, err
 	}
 	return canonical, nil
+}
+
+// transferTaskChatAttachments reopens the server-validated files through an
+// os.Root and sends their bytes to the campaign's read-only upload volume.
+// The broker independently checks length and digest before publication.
+func (c *taskSandboxController) transferTaskChatAttachments(ctx context.Context, info agent.RunInfo, baseDir string, attachments []chatAttachment) error {
+	if len(attachments) == 0 {
+		return nil
+	}
+	for _, attachment := range attachments {
+		if !sandboxbroker.ValidCampaignUploadName(attachment.Name) || attachment.Path != "uploads/"+attachment.Name || attachment.Size < 0 || attachment.Size > maxChatUpload || len(attachment.SHA256) != 64 {
+			return errors.New("attachment is incompatible with campaign upload storage")
+		}
+	}
+	baseRoot, err := os.OpenRoot(baseDir)
+	if err != nil {
+		return err
+	}
+	defer baseRoot.Close()
+	selectedDir, err := baseRoot.Lstat("uploads")
+	if err != nil || !selectedDir.IsDir() {
+		return errors.New("upload directory is unavailable or unsafe")
+	}
+	uploadRoot, err := baseRoot.OpenRoot("uploads")
+	if err != nil {
+		return err
+	}
+	defer uploadRoot.Close()
+	openedDir, err := uploadRoot.Open(".")
+	if err != nil {
+		return err
+	}
+	actualDir, statErr := openedDir.Stat()
+	closeErr := openedDir.Close()
+	if err := errors.Join(statErr, closeErr); err != nil || !os.SameFile(selectedDir, actualDir) {
+		return errors.New("upload directory changed at open")
+	}
+	for _, attachment := range attachments {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		selected, err := uploadRoot.Lstat(attachment.Name)
+		if err != nil || !selected.Mode().IsRegular() || selected.Size() != attachment.Size {
+			return errors.New("attachment changed before transfer")
+		}
+		file, err := uploadRoot.Open(attachment.Name)
+		if err != nil {
+			return err
+		}
+		opened, statErr := file.Stat()
+		if statErr != nil || !opened.Mode().IsRegular() || !os.SameFile(selected, opened) || opened.Size() != attachment.Size {
+			file.Close()
+			return errors.New("attachment changed at transfer open")
+		}
+		transferErr := c.UploadAttachment(ctx, info, attachment.Name, file, attachment.Size, attachment.SHA256)
+		final, finalErr := file.Stat()
+		closeErr := file.Close()
+		if err := errors.Join(transferErr, finalErr, closeErr); err != nil {
+			return err
+		}
+		if !os.SameFile(selected, final) || final.Size() != selected.Size() || !final.ModTime().Equal(selected.ModTime()) {
+			return errors.New("attachment changed during transfer")
+		}
+	}
+	return ctx.Err()
 }

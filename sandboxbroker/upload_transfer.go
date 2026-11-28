@@ -30,6 +30,10 @@ func validCampaignUploadName(name string) bool {
 	return true
 }
 
+// ValidCampaignUploadName lets the control plane reject incompatible names
+// before a task turn or any attachment transfer begins.
+func ValidCampaignUploadName(name string) bool { return validCampaignUploadName(name) }
+
 func uploadHelperName(spec Spec) (string, error) {
 	name, err := uploadVolumeName(spec)
 	if err != nil || !spec.UploadVolume {
