@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ type taskSandboxBackend interface {
 	Run(context.Context, string, string) (string, error)
 	RunInput(context.Context, string, string, []byte) (string, error)
 	PutArtifact(context.Context, string, string, []byte) (string, error)
+	PutUpload(context.Context, string, string, io.Reader, int64, string) error
 	Remove(context.Context, string) error
 }
 
@@ -297,6 +299,15 @@ func taskSandboxCommand(info agent.RunInfo, command string) (string, error) {
 
 func (c *taskSandboxController) PutArtifact(ctx context.Context, info agent.RunInfo, name string, data []byte) (string, error) {
 	return c.operate(ctx, info, func(handle string) (string, error) { return c.broker.PutArtifact(ctx, handle, name, data) })
+}
+
+// UploadAttachment binds a validated server-side stream to the live task's
+// opaque sandbox handle. Only the control plane may call this method.
+func (c *taskSandboxController) UploadAttachment(ctx context.Context, info agent.RunInfo, name string, input io.Reader, size int64, digest string) error {
+	_, err := c.operate(ctx, info, func(handle string) (string, error) {
+		return "", c.broker.PutUpload(ctx, handle, name, input, size, digest)
+	})
+	return err
 }
 
 // StoreOutput keeps long shell output in a random, immutable file on the

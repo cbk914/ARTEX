@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +39,8 @@ type sandboxBackendRecorder struct {
 	created     map[int64]int
 	ran         []string
 	put         []string
+	uploaded    []string
+	uploadBytes []byte
 	lastInput   []byte
 	lastCommand string
 	exitCode    int
@@ -99,6 +102,18 @@ func (b *sandboxBackendRecorder) PutArtifact(_ context.Context, handle, name str
 	return "digest", nil
 }
 
+func (b *sandboxBackendRecorder) PutUpload(_ context.Context, handle, name string, input io.Reader, size int64, digest string) error {
+	data, err := io.ReadAll(io.LimitReader(input, size+1))
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.uploaded = append(b.uploaded, handle+":"+name+":"+digest)
+	b.uploadBytes = append([]byte(nil), data...)
+	return nil
+}
+
 func (b *sandboxBackendRecorder) Remove(ctx context.Context, handle string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -127,6 +142,28 @@ func newSandboxTestController(t *testing.T) (*taskSandboxController, *sandboxTas
 		t.Fatal(err)
 	}
 	return c, store, backend, &admit
+}
+
+func TestTaskSandboxUploadBindsTaskExplorationAndHandle(t *testing.T) {
+	controller, _, backend, admit := newSandboxTestController(t)
+	valid := agent.RunInfo{TaskID: 7, ExplorationID: 70}
+	digest := strings.Repeat("a", 64)
+	if err := controller.UploadAttachment(context.Background(), agent.RunInfo{TaskID: 7, ExplorationID: 71}, "report.txt", strings.NewReader("synthetic"), 9, digest); err == nil {
+		t.Fatal("accepted upload for another exploration")
+	}
+	if len(backend.uploaded) != 0 || len(backend.created) != 0 {
+		t.Fatal("unauthorized upload reached broker")
+	}
+	if err := controller.UploadAttachment(context.Background(), valid, "análisis final.txt", strings.NewReader("synthetic"), 9, digest); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.uploaded) != 1 || backend.uploaded[0] != "handle-7:análisis final.txt:"+digest || string(backend.uploadBytes) != "synthetic" {
+		t.Fatalf("upload was not bound to task handle: %+v", backend)
+	}
+	*admit = false
+	if err := controller.UploadAttachment(context.Background(), valid, "second.txt", strings.NewReader("synthetic"), 9, digest); err == nil || len(backend.uploaded) != 1 {
+		t.Fatal("upload crossed task deletion barrier")
+	}
 }
 
 func TestTaskSandboxRejectsUnverifiedIdentityAndLifecycle(t *testing.T) {
