@@ -144,6 +144,86 @@ func newSandboxTestController(t *testing.T) (*taskSandboxController, *sandboxTas
 	return c, store, backend, &admit
 }
 
+func TestTaskSandboxInteractiveLeaseForPausedTask(t *testing.T) {
+	c, store, backend, admit := newSandboxTestController(t)
+	ctx := context.Background()
+	store.mu.Lock()
+	store.rows[7].Paused = true
+	store.mu.Unlock()
+	info := agent.RunInfo{TaskID: 7, ExplorationID: 70, Interactive: true}
+	if _, err := c.Run(ctx, info, "true"); err == nil {
+		t.Fatal("interactive command ran without a lease")
+	}
+	if _, err := c.BeginInteractive(ctx, agent.RunInfo{TaskID: 7, ExplorationID: 71, Interactive: true}); err == nil {
+		t.Fatal("another exploration acquired the lease")
+	}
+	release, err := c.BeginInteractive(ctx, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Run(ctx, info, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Run(ctx, agent.RunInfo{TaskID: 7, ExplorationID: 70, IntentID: 1, Interactive: true}, "true"); err == nil {
+		t.Fatal("worker used the interactive lease")
+	}
+	if _, err := c.Run(ctx, agent.RunInfo{TaskID: 7, ExplorationID: 70}, "true"); err == nil {
+		t.Fatal("planner ran while the task was paused")
+	}
+	*admit = false
+	if _, err := c.BeginInteractive(ctx, info); err == nil {
+		t.Fatal("lease crossed the deletion barrier")
+	}
+	*admit = true
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Run(ctx, info, "true"); err == nil {
+		t.Fatal("interactive command ran after lease release")
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.ran) != 1 {
+		t.Fatalf("unexpected broker commands: %v", backend.ran)
+	}
+}
+
+func TestTaskSandboxInteractiveLeaseRetainsTerminalSandboxUntilRelease(t *testing.T) {
+	c, store, backend, _ := newSandboxTestController(t)
+	ctx := context.Background()
+	info := agent.RunInfo{TaskID: 7, ExplorationID: 70, Interactive: true}
+	store.mu.Lock()
+	store.rows[7].Status = "done"
+	store.mu.Unlock()
+	release, err := c.BeginInteractive(ctx, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Run(ctx, info, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RetireTerminalTask(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	removedBeforeRelease := len(backend.removed)
+	backend.mu.Unlock()
+	if removedBeforeRelease != 0 {
+		t.Fatal("retired a sandbox during an interactive turn")
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.removed) != 1 || backend.removed[0] != "handle-7" {
+		t.Fatalf("terminal sandbox was not retired: %v", backend.removed)
+	}
+	if _, ok := c.entries[7]; ok {
+		t.Fatal("terminal sandbox handle survived release")
+	}
+}
+
 func TestTaskSandboxUploadBindsTaskExplorationAndHandle(t *testing.T) {
 	controller, _, backend, admit := newSandboxTestController(t)
 	valid := agent.RunInfo{TaskID: 7, ExplorationID: 70}

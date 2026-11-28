@@ -20,6 +20,7 @@ type RunInfo struct {
 	ExplorationID int64  // exploration id; 0 when unknown
 	IntentID      int64  // worker's intent node; 0 for planner/mainagent/chat
 	SessionID     string // chat conversation id; empty for task runs
+	Interactive   bool   // human main-agent turn; requires a live controller lease when task execution is paused or terminal
 }
 
 // explorationID reads a store's exploration id, tolerating a nil store (planner and

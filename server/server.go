@@ -4494,6 +4494,25 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		mainSeg, _ = t.Store.CurrentMainSeg()
 	}
 	segPtr := &mainSeg
+	var ma *agent.MainAgent
+	if s.taskRuntimeAvailable(t, "mainagent") {
+		ma = s.agentsForTask(t).main
+	}
+	var releaseInteractive func() error
+	if ma != nil && s.taskSandboxes != nil {
+		maTaskID, err := strconv.ParseInt(t.ID, 10, 64)
+		if err != nil {
+			s.finishTaskChat(t.ID, cancel)
+			writeErr(w, 400, "invalid task ID")
+			return
+		}
+		releaseInteractive, err = s.taskSandboxes.BeginInteractive(ctx, agent.RunInfo{TaskID: maTaskID, ExplorationID: t.ExpID, Interactive: true})
+		if err != nil {
+			s.finishTaskChat(t.ID, cancel)
+			writeErr(w, 409, "task sandbox unavailable for interactive turn")
+			return
+		}
+	}
 
 	// Persist + broadcast the human turn so the main-agent orchestration session survives page
 	// reloads and updates live: the conversation lives in the activity stream as
@@ -4503,10 +4522,6 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	humanTurn := userActivityWithAttachments("mainagent", req.Message, req.Attachments)
 	humanTurn.MainSeg = segPtr
 	s.engine.emitActivity(t, humanTurn)
-	var ma *agent.MainAgent
-	if s.taskRuntimeAvailable(t, "mainagent") {
-		ma = s.agentsForTask(t).main
-	}
 	if ma != nil {
 		// Run the agent on a per-turn cancellable ctx (NOT r.Context()): the turn can
 		// take minutes (multi-tool loop), and binding it to the request lifecycle meant
@@ -4515,6 +4530,11 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		// handler returns immediately and the browser never needs to hold the request.
 		go func() {
 			defer func() {
+				if releaseInteractive != nil {
+					if err := releaseInteractive(); err != nil {
+						log.Printf("[task-sandbox] interactive turn cleanup task=%s: %v", t.ID, err)
+					}
+				}
 				s.finishTaskChat(t.ID, cancel)
 			}()
 			// emit every step (thinking/tool_use/tool_result/text/result) so the main

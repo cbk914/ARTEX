@@ -45,23 +45,29 @@ type taskSandboxEntry struct {
 	retirePending bool
 }
 
+type taskInteractiveLease struct {
+	explorationID int64
+	count         int
+}
+
 // taskSandboxController binds a live task and its exploration to one broker
 // handle. It is a control-plane primitive; ARTEX tool paths are not migrated to
 // it yet. Admission must use Engine.beginTaskOperation/decInflight so a task
 // deletion cannot race a broker operation.
 type taskSandboxController struct {
-	store   taskSandboxStore
-	broker  taskSandboxBackend
-	admit   func(string) (func(), bool)
-	mu      sync.Mutex
-	entries map[int64]*taskSandboxEntry
+	store       taskSandboxStore
+	broker      taskSandboxBackend
+	admit       func(string) (func(), bool)
+	mu          sync.Mutex
+	entries     map[int64]*taskSandboxEntry
+	interactive map[int64]taskInteractiveLease
 }
 
 func newTaskSandboxController(store taskSandboxStore, broker taskSandboxBackend, admit func(string) (func(), bool)) (*taskSandboxController, error) {
 	if store == nil || broker == nil || admit == nil {
 		return nil, errors.New("task sandbox requires a task store, broker and deletion barrier")
 	}
-	return &taskSandboxController{store: store, broker: broker, admit: admit, entries: make(map[int64]*taskSandboxEntry)}, nil
+	return &taskSandboxController{store: store, broker: broker, admit: admit, entries: make(map[int64]*taskSandboxEntry), interactive: make(map[int64]taskInteractiveLease)}, nil
 }
 
 // newTaskSandboxController connects the controller to the real task deletion
@@ -78,6 +84,89 @@ func (s *Server) newTaskSandboxController(broker taskSandboxBackend) (*taskSandb
 	})
 }
 
+// BeginInteractive pins a human main-agent turn to one task and exploration.
+// It does not create a sandbox. Every later tool call still crosses the task
+// deletion barrier and rechecks the task row before using a handle.
+func (c *taskSandboxController) BeginInteractive(ctx context.Context, info agent.RunInfo) (func() error, error) {
+	if c == nil || c.store == nil || c.admit == nil || !info.Interactive || info.IntentID != 0 || info.TaskID <= 0 || info.ExplorationID <= 0 || info.SessionID != "" {
+		return nil, errors.New("invalid interactive sandbox authority")
+	}
+	id := strconv.FormatInt(info.TaskID, 10)
+	releaseOperation, ok := c.admit(id)
+	if !ok || releaseOperation == nil {
+		return nil, errors.New("interactive sandbox task is being deleted")
+	}
+	defer releaseOperation()
+	row, err := c.store.GetTask(info.TaskID)
+	if err != nil || row == nil || row.ID != info.TaskID || row.ExplorationID != info.ExplorationID {
+		return nil, errors.New("interactive sandbox task authority denied")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for {
+		c.mu.Lock()
+		entry := c.entries[info.TaskID]
+		if entry == nil {
+			err := c.addInteractiveLocked(info)
+			c.mu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
+		c.mu.Unlock()
+		entry.mu.Lock()
+		c.mu.Lock()
+		if c.entries[info.TaskID] != entry {
+			c.mu.Unlock()
+			entry.mu.Unlock()
+			continue
+		}
+		err := c.addInteractiveLocked(info)
+		c.mu.Unlock()
+		entry.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		break
+	}
+	return func() error {
+		c.mu.Lock()
+		lease := c.interactive[info.TaskID]
+		if lease.count == 0 || lease.explorationID != info.ExplorationID {
+			c.mu.Unlock()
+			return errors.New("interactive sandbox lease changed")
+		}
+		lease.count--
+		if lease.count == 0 {
+			delete(c.interactive, info.TaskID)
+		} else {
+			c.interactive[info.TaskID] = lease
+		}
+		c.mu.Unlock()
+		if lease.count != 0 {
+			return nil
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return c.RetireTerminalTask(cleanupCtx, info.TaskID)
+	}, nil
+}
+
+// addInteractiveLocked is called with c.mu held. A revived task cannot reuse a
+// lease belonging to a different exploration under the same task ID.
+func (c *taskSandboxController) addInteractiveLocked(info agent.RunInfo) error {
+	lease := c.interactive[info.TaskID]
+	if lease.count != 0 && lease.explorationID != info.ExplorationID {
+		return errors.New("interactive sandbox exploration changed")
+	}
+	lease.explorationID = info.ExplorationID
+	lease.count++
+	c.interactive[info.TaskID] = lease
+	return nil
+}
+
 func (c *taskSandboxController) authorizedTask(info agent.RunInfo) (*db.Task, error) {
 	if info.TaskID <= 0 || info.ExplorationID <= 0 || info.SessionID != "" {
 		return nil, errors.New("task sandbox requires explicit task and exploration identity")
@@ -86,8 +175,19 @@ func (c *taskSandboxController) authorizedTask(info agent.RunInfo) (*db.Task, er
 	if err != nil {
 		return nil, fmt.Errorf("verify task sandbox authority: %w", err)
 	}
-	if row == nil || row.ID != info.TaskID || row.ExplorationID != info.ExplorationID || row.Paused || row.Queued || db.IsTerminal(row.Status) {
+	if row == nil || row.ID != info.TaskID || row.ExplorationID != info.ExplorationID {
 		return nil, errors.New("task sandbox authority denied")
+	}
+	if row.Paused || row.Queued || db.IsTerminal(row.Status) {
+		if !info.Interactive || info.IntentID != 0 {
+			return nil, errors.New("task sandbox authority denied")
+		}
+		c.mu.Lock()
+		lease := c.interactive[info.TaskID]
+		c.mu.Unlock()
+		if lease.count == 0 || lease.explorationID != info.ExplorationID {
+			return nil, errors.New("interactive task sandbox lease is required")
+		}
 	}
 	return row, nil
 }
@@ -223,8 +323,16 @@ func (c *taskSandboxController) RetireTerminalTask(ctx context.Context, id int64
 	if err != nil {
 		return fmt.Errorf("check task sandbox retirement: %w", err)
 	}
-	if row != nil && row.ExplorationID == entry.expID && !db.IsTerminal(row.Status) {
-		return nil
+	if row != nil && row.ExplorationID == entry.expID {
+		if !db.IsTerminal(row.Status) {
+			return nil
+		}
+		c.mu.Lock()
+		lease := c.interactive[id]
+		c.mu.Unlock()
+		if lease.count != 0 && lease.explorationID == entry.expID {
+			return nil
+		}
 	}
 	if err := c.broker.Remove(ctx, entry.handle); err != nil {
 		return fmt.Errorf("retire terminal task sandbox: %w", err)
