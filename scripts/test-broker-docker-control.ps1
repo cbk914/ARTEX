@@ -150,6 +150,8 @@ try {
         ForEach-Object { $_.ToString('x2') }) -join ''
     $uploadResult = Invoke-Broker 'PUT' "/v1/sandboxes/$($first.handle)/uploads/fixture.txt" $uploadPayload 'application/octet-stream' $uploadHash | ConvertFrom-Json
     if ($uploadResult.sha256 -ne $uploadHash) { throw 'broker returned an unexpected upload digest' }
+    $repeatUpload = Invoke-Broker 'PUT' "/v1/sandboxes/$($first.handle)/uploads/fixture.txt" $uploadPayload 'application/octet-stream' $uploadHash | ConvertFrom-Json
+    if ($repeatUpload.sha256 -ne $uploadHash) { throw 'identical attachment retry was not idempotent' }
     $uploadRead = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" '{"command":"test \"$(cat /campaign/main/uploads/fixture.txt)\" = UPLOAD_A && test ! -w /campaign/main/uploads/fixture.txt && printf upload-private"}' | ConvertFrom-Json
     if ($uploadRead.output -ne 'upload-private') { throw 'published upload unreadable or writable by executor' }
     $uploadOther = Invoke-Broker 'POST' "/v1/sandboxes/$($second.handle)/run" '{"command":"test ! -e /campaign/main/uploads/fixture.txt && printf upload-isolated"}' | ConvertFrom-Json
@@ -217,6 +219,27 @@ try {
         if ($empty.output -ne 'clean') { throw 'recreated campaign retained old private file' }
         Invoke-Broker 'DELETE' "/v1/sandboxes/$($reused.handle)" | Out-Null
     }
+    $originalPayload = 'ORIGINAL'
+    $originalHash = ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($originalPayload)) |
+        ForEach-Object { $_.ToString('x2') }) -join ''
+    $originalResult = Invoke-Broker 'PUT' "/v1/sandboxes/$($second.handle)/uploads/reuse.txt" $originalPayload 'application/octet-stream' $originalHash | ConvertFrom-Json
+    if ($originalResult.sha256 -ne $originalHash) { throw 'original upload digest mismatch' }
+    $changedHash = ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes('CHANGED')) |
+        ForEach-Object { $_.ToString('x2') }) -join ''
+    $changedStatus = docker run --rm --pull=never --network none --user 0:0 `
+        --mount "type=volume,src=$socketVolume,dst=/run/artex-broker" `
+        --tmpfs /app/data:rw,nosuid,nodev,noexec,size=1m `
+        --tmpfs /app/keys:rw,nosuid,nodev,noexec,size=1m `
+        --entrypoint curl $SandboxImage --silent --show-error --unix-socket $socket `
+        --output /dev/null --write-out '%{http_code}' --request PUT `
+        --header 'Content-Type: application/octet-stream' `
+        --header "X-Artex-SHA256: $changedHash" --data-binary 'CHANGED' `
+        "http://broker/v1/sandboxes/$($second.handle)/uploads/reuse.txt"
+    Assert-Exit 'request changed content under an existing name'
+    if ($changedStatus -ne '503' -or @(NewSandboxIDs $baseline).Count -ne 0) {
+        throw "existing upload name was replaced or sandbox was not retired (HTTP $changedStatus)"
+    }
+    $third = Invoke-Broker 'POST' '/v1/sandboxes' '{"campaign_id":73}' | ConvertFrom-Json
     $badUploadStatus = docker run --rm --pull=never --network none --user 0:0 `
         --mount "type=volume,src=$socketVolume,dst=/run/artex-broker" `
         --tmpfs /app/data:rw,nosuid,nodev,noexec,size=1m `
@@ -225,7 +248,7 @@ try {
         --output /dev/null --write-out '%{http_code}' --request PUT `
         --header 'Content-Type: application/octet-stream' `
         --header "X-Artex-SHA256: $('0' * 64)" --data-binary 'BAD_UPLOAD' `
-        "http://broker/v1/sandboxes/$($second.handle)/uploads/bad.txt"
+        "http://broker/v1/sandboxes/$($third.handle)/uploads/bad.txt"
     Assert-Exit 'request synthetic corrupted upload'
     if ($badUploadStatus -ne '503' -or @(NewSandboxIDs $baseline).Count -ne 0) {
         throw "corrupted upload was not rejected and retired safely (HTTP $badUploadStatus)"

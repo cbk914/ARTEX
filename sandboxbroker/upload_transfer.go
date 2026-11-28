@@ -74,12 +74,17 @@ func (d *DockerEngine) RemoveUploadHelper(ctx context.Context, spec Spec) error 
 const publishUploadCommand = `set -eu
 umask 077
 mkdir -p -m 0700 /uploads/.incoming
-test ! -e "$2"
 cat > "$1"
 test "$(wc -c < "$1")" -eq "$4"
 printf '%s  %s\n' "$3" "$1" | sha256sum -c - >/dev/null
 chmod 0444 "$1"
-ln "$1" "$2"
+if test -e "$2"; then
+    test "$(wc -c < "$2")" -eq "$4"
+    test "$(stat -c %a "$2")" = 444
+    printf '%s  %s\n' "$3" "$2" | sha256sum -c - >/dev/null
+else
+    ln "$1" "$2"
+fi
 rm "$1"`
 
 // PutUpload streams one immutable file to a separate, networkless helper. The
