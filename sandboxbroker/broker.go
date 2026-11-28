@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"sync"
@@ -45,6 +46,7 @@ type Engine interface {
 	Exec(context.Context, string, string) (string, error)
 	ExecInput(context.Context, string, string, []byte) (string, error)
 	PutArtifact(context.Context, string, string, []byte) error
+	PutUpload(context.Context, Spec, string, io.Reader, int64, string) error
 	Remove(context.Context, string) error
 	CreateUploadVolume(context.Context, Spec) (string, error)
 	VerifyUploadVolume(context.Context, Spec) error
@@ -364,6 +366,35 @@ func (b *Broker) PutArtifact(ctx context.Context, handle, name string, data []by
 	}
 	if err := b.engine.PutArtifact(putCtx, s.container, name, data); err != nil {
 		return errors.Join(fmt.Errorf("publish sandbox artifact: %w", err), b.retireLocked(handle, s))
+	}
+	if err := putCtx.Err(); err != nil {
+		return errors.Join(err, b.retireLocked(handle, s))
+	}
+	return nil
+}
+
+// PutUpload publishes an integrity-bound attachment to the campaign's
+// read-only upload mount. A caller must authorize the task before using its
+// opaque handle; the broker serializes publication with sandbox operations.
+func (b *Broker) PutUpload(ctx context.Context, handle, name string, input io.Reader, size int64, digest string) error {
+	if !validArtifactName(name) || input == nil || size <= 0 || size > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
+		return errors.New("invalid campaign upload")
+	}
+	s, err := b.lockSandbox(handle)
+	if err != nil {
+		return err
+	}
+	defer s.opMu.Unlock()
+	if s.poisoned || !s.spec.UploadVolume {
+		return errors.New("sandbox upload volume unavailable")
+	}
+	putCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	if err := b.engine.Verify(putCtx, s.container, s.spec); err != nil {
+		return errors.Join(fmt.Errorf("verify sandbox before upload: %w", err), b.retireLocked(handle, s))
+	}
+	if err := b.engine.PutUpload(putCtx, s.spec, name, input, size, digest); err != nil {
+		return errors.Join(fmt.Errorf("publish campaign upload: %w", err), b.retireLocked(handle, s))
 	}
 	if err := putCtx.Err(); err != nil {
 		return errors.Join(err, b.retireLocked(handle, s))

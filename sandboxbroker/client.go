@@ -146,6 +146,41 @@ func (c *Client) PutArtifact(ctx context.Context, handle, name string, data []by
 	return result.SHA256, nil
 }
 
+// PutUpload streams an already authorized attachment without buffering it in
+// the client. The broker verifies its exact length and digest before publish.
+func (c *Client) PutUpload(ctx context.Context, handle, name string, input io.Reader, size int64, digest string) error {
+	if !ownershipToken.MatchString(handle) || !validArtifactName(name) || input == nil || size <= 0 || size > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
+		return errors.New("invalid broker upload request")
+	}
+	putCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	request, err := http.NewRequestWithContext(putCtx, http.MethodPut, "http://broker/v1/sandboxes/"+handle+"/uploads/"+name, io.LimitReader(input, size+1))
+	if err != nil {
+		return errors.New("invalid broker upload request")
+	}
+	request.ContentLength = size
+	request.Header.Set("Content-Type", "application/octet-stream")
+	request.Header.Set("X-Artex-SHA256", digest)
+	uploadClient := *c.http
+	uploadClient.Timeout = 0 // putCtx, rather than the short control-call timer, bounds streaming.
+	response, err := uploadClient.Do(request)
+	if err != nil {
+		return errors.New("broker upload unavailable")
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1025))
+	if err != nil || len(data) > 1024 || response.StatusCode != http.StatusCreated {
+		return errors.New("broker upload rejected")
+	}
+	var result struct {
+		SHA256 string `json:"sha256"`
+	}
+	if json.Unmarshal(data, &result) != nil || result.SHA256 != digest {
+		return errors.New("broker upload digest mismatch")
+	}
+	return nil
+}
+
 func (c *Client) request(ctx context.Context, method, path string, body any, wantStatus int) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {

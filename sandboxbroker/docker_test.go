@@ -37,6 +37,15 @@ func (r *recordingRunner) Run(_ context.Context, args ...string) ([]byte, error)
 		return nil, errors.New("synthetic docker failure")
 	}
 	output := r.responses[args[0]]
+	if args[0] == "ps" {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--filter=name=^/artex-upload-seed-") {
+				if scoped, ok := r.responses["ps upload helper"]; ok {
+					output = scoped
+				}
+			}
+		}
+	}
 	if len(args) > 1 {
 		if scoped, ok := r.responses[args[0]+" "+args[1]]; ok {
 			output = scoped

@@ -3,6 +3,7 @@ package sandboxbroker
 import (
 	"context"
 	"errors"
+	"io"
 	"regexp"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ const testImage = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 type fakeEngine struct {
 	created, started, verified, executed, delivered, removed int
+	uploadsDelivered                                         int
 	volumesCreated, volumesRemoved                           int
 	failure                                                  string
 	failRemove                                               bool
@@ -206,6 +208,14 @@ func (f *fakeEngine) PutArtifact(_ context.Context, _, _ string, _ []byte) error
 		return errors.New("artifact failure")
 	}
 	return nil
+}
+func (f *fakeEngine) PutUpload(_ context.Context, _ Spec, _ string, input io.Reader, size int64, _ string) error {
+	f.uploadsDelivered++
+	if f.failure == "upload" {
+		return errors.New("upload transfer failure")
+	}
+	_, err := io.Copy(io.Discard, io.LimitReader(input, size+1))
+	return err
 }
 func (f *fakeEngine) Remove(context.Context, string) error {
 	f.removed++

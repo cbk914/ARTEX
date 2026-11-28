@@ -163,6 +163,50 @@ func TestBrokerHTTPArtifactAdmissionAndDigest(t *testing.T) {
 	}
 }
 
+func TestBrokerHTTPUploadAdmissionAndDigest(t *testing.T) {
+	engine := &fakeEngine{}
+	broker, _ := New(engine, testImage)
+	handler, _ := newHTTPHandler(broker)
+	handle, err := broker.Create(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("synthetic attachment")
+	digest := sha256.Sum256(body)
+	want := fmt.Sprintf("%x", digest)
+	path := "/v1/sandboxes/" + handle + "/uploads/fixture.txt"
+	put := func(path, contentType, hash string, contentLength int64) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body))
+		request.ContentLength = contentLength
+		request.Header.Set("Content-Type", contentType)
+		request.Header.Set("X-Artex-SHA256", hash)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	for _, tc := range []struct {
+		path, contentType, hash string
+		size                    int64
+	}{
+		{path, "application/json", want, int64(len(body))},
+		{path, "application/octet-stream", "bad", int64(len(body))},
+		{path, "application/octet-stream", want, 0},
+		{path, "application/octet-stream", want, maxCampaignUploadBytes + 1},
+		{"/v1/sandboxes/" + handle + "/uploads/-bad", "application/octet-stream", want, int64(len(body))},
+	} {
+		if got := put(tc.path, tc.contentType, tc.hash, tc.size); got.Code != http.StatusBadRequest {
+			t.Errorf("accepted invalid upload: %d", got.Code)
+		}
+	}
+	if engine.uploadsDelivered != 0 {
+		t.Fatal("invalid upload reached engine")
+	}
+	got := put(path, "application/octet-stream", want, int64(len(body)))
+	if got.Code != http.StatusCreated || !bytes.Contains(got.Body.Bytes(), []byte(want)) || engine.uploadsDelivered != 1 {
+		t.Fatalf("valid upload rejected: %d %s delivered=%d", got.Code, got.Body.String(), engine.uploadsDelivered)
+	}
+}
+
 func TestBrokerHTTPRunInputPreservesBytesAndRejectsSelectors(t *testing.T) {
 	engine := &fakeEngine{}
 	broker, _ := New(engine, testImage)

@@ -121,7 +121,7 @@ func TestRecoverRecordedRemovesOrphanedOwnedUploadVolume(t *testing.T) {
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("orphan intent remains: %v %v", entries, err)
 	}
-	if len(r.calls) != 4 || r.calls[3][0] != "volume" || r.calls[3][1] != "rm" || r.calls[3][2] != name {
+	if len(r.calls) != 5 || r.calls[4][0] != "volume" || r.calls[4][1] != "rm" || r.calls[4][2] != name {
 		t.Fatalf("orphan volume was not safely removed: %v", r.calls)
 	}
 }
@@ -150,6 +150,44 @@ func TestRecoverRecordedPreservesForeignUploadVolume(t *testing.T) {
 		if len(call) > 1 && call[0] == "volume" && call[1] == "rm" {
 			t.Fatalf("removed foreign volume: %v", call)
 		}
+	}
+}
+
+func TestRecoverRecordedRemovesOwnedUploadHelperBeforeVolume(t *testing.T) {
+	j, spec := journalFixture(t)
+	spec.UploadVolume = true
+	if err := j.Record(spec); err != nil {
+		t.Fatal(err)
+	}
+	helper, _ := uploadHelperName(spec)
+	volume, _ := uploadVolumeName(spec)
+	helperID := strings.Repeat("d", 64)
+	r := &recordingRunner{responses: map[string][]byte{
+		"ps upload helper": []byte(helperID + "\n"),
+		"ps":               nil,
+		"inspect":          jsonArray(t, map[string]any{"Id": helperID, "Name": "/" + helper, "Config": map[string]any{"Labels": map[string]string{ownershipLabel: spec.Token, ownerLabel: spec.Owner, uploadHelperLabel: "upload"}}}),
+		"volume ls":        []byte(volume + "\n"),
+		"volume inspect":   uploadVolumeInspect(t, spec, map[string]string{ownershipLabel: spec.Token, ownerLabel: spec.Owner}),
+	}}
+	d := &DockerEngine{runner: r}
+	if err := d.RecoverRecorded(context.Background(), j, testImage); err != nil {
+		t.Fatal(err)
+	}
+	var helperRemoved, volumeRemoved int
+	for i, call := range r.calls {
+		if call[0] == "rm" && call[len(call)-1] == helperID {
+			helperRemoved = i + 1
+		}
+		if len(call) > 2 && call[0] == "volume" && call[1] == "rm" && call[2] == volume {
+			volumeRemoved = i + 1
+		}
+	}
+	if helperRemoved == 0 || volumeRemoved <= helperRemoved {
+		t.Fatalf("helper must be removed before its volume: %v", r.calls)
+	}
+	entries, err := j.Entries()
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("recovered resources retained journal intent: %v %v", entries, err)
 	}
 }
 

@@ -133,6 +133,23 @@ func newHTTPHandler(broker *Broker) (http.Handler, error) {
 			SHA256 string `json:"sha256"`
 		}{hex.EncodeToString(digest[:])})
 	})
+	mux.HandleFunc("PUT /v1/sandboxes/{handle}/uploads/{name}", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		digest := r.Header.Get("X-Artex-SHA256")
+		if !validArtifactName(name) || r.Header.Get("Content-Type") != "application/octet-stream" || r.ContentLength <= 0 || r.ContentLength > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
+			writeBrokerError(w, http.StatusBadRequest, "invalid campaign upload")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+		defer cancel()
+		if err := broker.PutUpload(ctx, r.PathValue("handle"), name, http.MaxBytesReader(w, r.Body, maxCampaignUploadBytes+1), r.ContentLength, digest); err != nil {
+			writeBrokerError(w, http.StatusServiceUnavailable, "campaign upload unavailable")
+			return
+		}
+		writeBrokerJSON(w, http.StatusCreated, struct {
+			SHA256 string `json:"sha256"`
+		}{digest})
+	})
 	mux.HandleFunc("DELETE /v1/sandboxes/{handle}", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()

@@ -152,6 +152,11 @@ func (d *DockerEngine) RecoverRecorded(ctx context.Context, j *FileJournal, imag
 		if spec.Image != image {
 			return errors.New("journal image differs from configured sandbox image")
 		}
+		if spec.UploadVolume {
+			if err := d.RemoveUploadHelper(ctx, spec); err != nil {
+				return fmt.Errorf("remove journaled upload helper for %s: %w", spec.Name, err)
+			}
+		}
 		output, err := d.runner.Run(ctx, "ps", "-a", "--no-trunc",
 			"--filter=label="+ownershipLabel+"="+spec.Token,
 			"--filter=label="+ownerLabel+"="+spec.Owner,

@@ -22,7 +22,7 @@ function NewSandboxIDs([string[]]$before) {
         Where-Object { $_ -and $_ -notin $before })
 }
 
-function Invoke-Broker([string]$method, [string]$path, [string]$body = '', [string]$contentType = 'application/json') {
+function Invoke-Broker([string]$method, [string]$path, [string]$body = '', [string]$contentType = 'application/json', [string]$digest = '') {
     $dockerArgs = @('run', '--rm', '--pull=never', '--network', 'none', '--user', '0:0',
         '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges:true',
         '--mount', "type=volume,src=$socketVolume,dst=/run/artex-broker",
@@ -32,6 +32,7 @@ function Invoke-Broker([string]$method, [string]$path, [string]$body = '', [stri
         '--silent', '--show-error', '--fail', '--unix-socket', $socket,
         '--request', $method, '--header', "Content-Type: $contentType")
     if ($body) { $dockerArgs += @('--data-binary', $body) }
+    if ($digest) { $dockerArgs += @('--header', "X-Artex-SHA256: $digest") }
     $dockerArgs += "http://broker$path"
     $result = docker @dockerArgs
     Assert-Exit "broker $method $path"
@@ -144,6 +145,26 @@ try {
     $other = Invoke-Broker 'POST' "/v1/sandboxes/$($second.handle)/run" '{"command":"test ! -e /artifacts/fixture.txt"}' | ConvertFrom-Json
     if ($null -eq $other.output) { throw 'other campaign artifact check failed' }
 
+    $uploadPayload = 'UPLOAD_A'
+    $uploadHash = ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($uploadPayload)) |
+        ForEach-Object { $_.ToString('x2') }) -join ''
+    $uploadResult = Invoke-Broker 'PUT' "/v1/sandboxes/$($first.handle)/uploads/fixture.txt" $uploadPayload 'application/octet-stream' $uploadHash | ConvertFrom-Json
+    if ($uploadResult.sha256 -ne $uploadHash) { throw 'broker returned an unexpected upload digest' }
+    $uploadRead = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" '{"command":"test \"$(cat /campaign/main/uploads/fixture.txt)\" = UPLOAD_A && test ! -w /campaign/main/uploads/fixture.txt && printf upload-private"}' | ConvertFrom-Json
+    if ($uploadRead.output -ne 'upload-private') { throw 'published upload unreadable or writable by executor' }
+    $uploadOther = Invoke-Broker 'POST' "/v1/sandboxes/$($second.handle)/run" '{"command":"test ! -e /campaign/main/uploads/fixture.txt && printf upload-isolated"}' | ConvertFrom-Json
+    if ($uploadOther.output -ne 'upload-isolated') { throw 'other campaign saw the published upload' }
+    docker run --rm --pull=never --network none --user 0:0 `
+        --mount "type=volume,src=$socketVolume,dst=/run/artex-broker" `
+        --tmpfs /app/data:rw,nosuid,nodev,noexec,size=1m `
+        --tmpfs /app/keys:rw,nosuid,nodev,noexec,size=1m `
+        --entrypoint /bin/sh $SandboxImage -c `
+        'set -eu; bytes=17825792; digest=$(head -c "$bytes" /dev/zero | sha256sum | cut -d " " -f1); head -c "$bytes" /dev/zero | curl --silent --show-error --fail --unix-socket /run/artex-broker/broker.sock --request PUT --header "Content-Type: application/octet-stream" --header "X-Artex-SHA256: $digest" --data-binary @- "http://broker/v1/sandboxes/$1/uploads/large.bin" >/dev/null' `
+        -- $first.handle
+    Assert-Exit 'stream synthetic 17 MiB upload'
+    $largeRead = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" '{"command":"test \"$(stat -c %s /campaign/main/uploads/large.bin)\" = 17825792 && test ! -w /campaign/main/uploads/large.bin && printf large-private"}' | ConvertFrom-Json
+    if ($largeRead.output -ne 'large-private') { throw 'large upload was not published read-only' }
+
     $children = @(NewSandboxIDs $baseline)
     if ($children.Count -ne 2) { throw "expected two owned sandboxes; found $($children.Count)" }
     $owners = @()
@@ -189,6 +210,19 @@ try {
         if ($empty.output -ne 'clean') { throw 'recreated campaign retained old private file' }
         Invoke-Broker 'DELETE' "/v1/sandboxes/$($reused.handle)" | Out-Null
     }
+    $badUploadStatus = docker run --rm --pull=never --network none --user 0:0 `
+        --mount "type=volume,src=$socketVolume,dst=/run/artex-broker" `
+        --tmpfs /app/data:rw,nosuid,nodev,noexec,size=1m `
+        --tmpfs /app/keys:rw,nosuid,nodev,noexec,size=1m `
+        --entrypoint curl $SandboxImage --silent --show-error --unix-socket $socket `
+        --output /dev/null --write-out '%{http_code}' --request PUT `
+        --header 'Content-Type: application/octet-stream' `
+        --header "X-Artex-SHA256: $('0' * 64)" --data-binary 'BAD_UPLOAD' `
+        "http://broker/v1/sandboxes/$($second.handle)/uploads/bad.txt"
+    Assert-Exit 'request synthetic corrupted upload'
+    if ($badUploadStatus -ne '503' -or @(NewSandboxIDs $baseline).Count -ne 0) {
+        throw "corrupted upload was not rejected and retired safely (HTTP $badUploadStatus)"
+    }
     docker stop --time=80 $brokerName | Out-Null
     Assert-Exit 'graceful broker stop'
     if (@(NewSandboxIDs $baseline).Count -ne 0) { throw 'broker shutdown left an owned sandbox' }
@@ -206,7 +240,7 @@ try {
         --tmpfs /app/keys:rw,nosuid,nodev,noexec,size=1m `
         --entrypoint /bin/sh $SandboxImage -c "test ! -e $socket"
     Assert-Exit 'broker socket cleanup'
-    Write-Output 'PASS: Docker-backed broker created isolated sandboxes, delivered a private artifact, ran commands, and removed sandboxes and socket.'
+    Write-Output 'PASS: Docker-backed broker isolated campaigns, streamed and rejected synthetic uploads, and removed sandboxes, helper and volumes.'
 } finally {
     if ($brokerCreated) { docker stop --time=80 $brokerName 2>$null | Out-Null }
     docker rm -f -v $brokerName 2>$null | Out-Null

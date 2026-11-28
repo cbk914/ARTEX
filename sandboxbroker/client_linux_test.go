@@ -4,6 +4,8 @@ package sandboxbroker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -58,6 +60,11 @@ func TestUnixClientRoundTripAndFailClosed(t *testing.T) {
 	output, err = client.RunInput(context.Background(), handle, "cat", input)
 	if err != nil || output != "ran: cat" || string(engine.lastInput) != string(input) {
 		t.Fatalf("stdin run: %q %v input=%q", output, err, engine.lastInput)
+	}
+	upload := []byte("synthetic upload")
+	hash := sha256.Sum256(upload)
+	if err := client.PutUpload(context.Background(), handle, "fixture.txt", strings.NewReader(string(upload)), int64(len(upload)), hex.EncodeToString(hash[:])); err != nil {
+		t.Fatalf("stream upload: %v", err)
 	}
 	engine.failure = "command-exit"
 	output, err = client.Run(context.Background(), handle, "exit 7")
