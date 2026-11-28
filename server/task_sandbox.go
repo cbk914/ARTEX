@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,7 @@ type taskSandboxBackend interface {
 
 var _ taskSandboxBackend = (*sandboxbroker.Client)(nil)
 var _ agent.TaskFileRunner = (*taskSandboxController)(nil)
+var _ agent.TaskOutputStorer = (*taskSandboxController)(nil)
 
 type taskSandboxStore interface {
 	GetTask(int64) (*db.Task, error)
@@ -262,6 +265,23 @@ func (c *taskSandboxController) RunInput(ctx context.Context, info agent.RunInfo
 
 func (c *taskSandboxController) PutArtifact(ctx context.Context, info agent.RunInfo, name string, data []byte) (string, error) {
 	return c.operate(ctx, info, func(handle string) (string, error) { return c.broker.PutArtifact(ctx, handle, name, data) })
+}
+
+// StoreOutput keeps long shell output in a random, immutable file on the
+// campaign-private artifact tmpfs. A model cannot choose its name or handle.
+func (c *taskSandboxController) StoreOutput(ctx context.Context, info agent.RunInfo, data []byte) (string, error) {
+	if len(data) == 0 || len(data) > 1<<20 {
+		return "", errors.New("invalid task sandbox output size")
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	name := "output-" + hex.EncodeToString(nonce[:]) + ".txt"
+	if _, err := c.PutArtifact(ctx, info, name, data); err != nil {
+		return "", err
+	}
+	return "/artifacts/" + name, nil
 }
 
 func (c *taskSandboxController) RunFileTool(ctx context.Context, info agent.RunInfo, req agent.SandboxFileToolRequest) (actool.Result, error) {

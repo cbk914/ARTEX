@@ -16,6 +16,8 @@ type recordingTaskShell struct {
 	info     RunInfo
 	cmd      string
 	exitCode int
+	output   string
+	stored   []byte
 }
 
 func (r *recordingTaskShell) Run(ctx context.Context, info RunInfo, command string) (string, error) {
@@ -28,7 +30,36 @@ func (r *recordingTaskShell) Run(ctx context.Context, info RunInfo, command stri
 	if r.exitCode != 0 {
 		return "sandbox diagnostic\n", &sandboxbroker.CommandExitError{Code: r.exitCode}
 	}
+	if r.output != "" {
+		return r.output, nil
+	}
 	return "sandbox output", nil
+}
+
+func (r *recordingTaskShell) StoreOutput(_ context.Context, _ RunInfo, data []byte) (string, error) {
+	r.stored = append([]byte(nil), data...)
+	return "/artifacts/private-output.txt", nil
+}
+
+type shellWithoutOutputStore struct{}
+
+func (shellWithoutOutputStore) Run(_ context.Context, _ RunInfo, _ string) (string, error) {
+	return strings.Repeat("s", 100), nil
+}
+
+func TestTaskBashLongOutputStaysInCampaignSandbox(t *testing.T) {
+	runner := &recordingTaskShell{output: strings.Repeat("private", 20)}
+	bash := &sandboxBashTool{runner: runner}
+	ctx := WithRunInfo(context.Background(), RunInfo{TaskID: 41, ExplorationID: 73})
+	result, err := bash.Call(ctx, json.RawMessage(`{"command":"printf private"}`), &actool.ToolContext{MaxOutputChars: 20, OutputDir: t.TempDir()})
+	if err != nil || result.IsError || !strings.Contains(result.Flatten(), "/artifacts/private-output.txt") || string(runner.stored) != runner.output {
+		t.Fatalf("private output result=%q stored=%d err=%v", result.Flatten(), len(runner.stored), err)
+	}
+	missing := &sandboxBashTool{runner: shellWithoutOutputStore{}}
+	result, err = missing.Call(ctx, json.RawMessage(`{"command":"printf private"}`), &actool.ToolContext{MaxOutputChars: 20, OutputDir: t.TempDir()})
+	if err != nil || !result.IsError || !strings.Contains(result.Flatten(), "private output storage is unavailable") {
+		t.Fatalf("missing private store: %q, %v", result.Flatten(), err)
+	}
 }
 
 func TestTaskBashRoutesWithExplicitIdentity(t *testing.T) {

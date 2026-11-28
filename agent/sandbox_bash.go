@@ -18,6 +18,11 @@ type TaskShellRunner interface {
 	Run(context.Context, RunInfo, string) (string, error)
 }
 
+// TaskOutputStorer keeps long command output inside the same campaign sandbox.
+type TaskOutputStorer interface {
+	StoreOutput(context.Context, RunInfo, []byte) (string, error)
+}
+
 // sandboxBashTool keeps the SDK's permission check while replacing its host
 // subprocess path for task runs. The advertised contract matches the broker's
 // synchronous, 30-second execution limit.
@@ -80,12 +85,39 @@ func (t *sandboxBashTool) Call(ctx context.Context, input json.RawMessage, tc *a
 			if strings.TrimSpace(output) == "" {
 				output = "(no output)"
 			}
-			return actool.Errorf(fmt.Sprintf("%s\n\n[exit code %d]", actool.Capture(tc, output), exit.Code)), nil
+			captured, captureErr := captureSandboxOutput(ctx, t.runner, info, output, tc)
+			if captureErr != nil {
+				return actool.Errorf(fmt.Sprintf("Error: task sandbox output storage failed: %v", captureErr)), nil
+			}
+			return actool.Errorf(fmt.Sprintf("%s\n\n[exit code %d]", captured, exit.Code)), nil
 		}
 		return actool.Errorf(fmt.Sprintf("Error: task sandbox command failed: %v", err)), nil
 	}
 	if strings.TrimSpace(output) == "" {
 		output = "(command produced no output)"
 	}
-	return actool.Text(actool.Capture(tc, output)), nil
+	captured, captureErr := captureSandboxOutput(ctx, t.runner, info, output, tc)
+	if captureErr != nil {
+		return actool.Errorf(fmt.Sprintf("Error: task sandbox output storage failed: %v", captureErr)), nil
+	}
+	return actool.Text(captured), nil
+}
+
+func captureSandboxOutput(ctx context.Context, runner TaskShellRunner, info RunInfo, output string, tc *actool.ToolContext) (string, error) {
+	limit := actool.MaxOutput(tc)
+	if len(output) <= limit {
+		return output, nil
+	}
+	storer, ok := runner.(TaskOutputStorer)
+	if !ok {
+		return "", errors.New("private output storage is unavailable")
+	}
+	path, err := storer.StoreOutput(ctx, info, []byte(output))
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(path, "/artifacts/") {
+		return "", errors.New("private output storage returned an invalid path")
+	}
+	return output[:limit] + "\n\n[Output shortened. Full output: " + path + "]", nil
 }

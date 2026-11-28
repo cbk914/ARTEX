@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -422,5 +423,31 @@ func TestTaskSandboxFileToolBindsVerifiedTask(t *testing.T) {
 	defer backend.mu.Unlock()
 	if backend.created[7] != 1 {
 		t.Fatalf("unexpected sandbox creation: %v", backend.created)
+	}
+}
+
+func TestTaskSandboxOutputUsesPrivateArtifactAndTaskAuthority(t *testing.T) {
+	c, store, backend, _ := newSandboxTestController(t)
+	info := agent.RunInfo{TaskID: 7, ExplorationID: 70}
+	path, err := c.StoreOutput(context.Background(), info, []byte("synthetic private output"))
+	if err != nil || !strings.HasPrefix(path, "/artifacts/output-") || !strings.HasSuffix(path, ".txt") {
+		t.Fatalf("private output path=%q err=%v", path, err)
+	}
+	backend.mu.Lock()
+	if len(backend.put) != 1 || backend.put[0] != "handle-7:"+strings.TrimPrefix(path, "/artifacts/") {
+		backend.mu.Unlock()
+		t.Fatalf("wrong broker artifact: %v", backend.put)
+	}
+	backend.mu.Unlock()
+	store.mu.Lock()
+	store.rows[7].Status = "done"
+	store.mu.Unlock()
+	if _, err := c.StoreOutput(context.Background(), info, []byte("later")); err == nil {
+		t.Fatal("terminal task stored output")
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.put) != 1 {
+		t.Fatalf("terminal task reached artifact store: %v", backend.put)
 	}
 }
