@@ -54,6 +54,19 @@ func TestDockerUploadRejectsMalformedRequestBeforeDocker(t *testing.T) {
 	}
 }
 
+func TestCampaignUploadNamePreservesUnicodeWithoutPathEscape(t *testing.T) {
+	for _, name := range []string{"report.txt", "análisis final.pdf", "résumé (1).txt", ".notes"} {
+		if !validCampaignUploadName(name) {
+			t.Errorf("rejected valid upload name %q", name)
+		}
+	}
+	for _, name := range []string{"", ".", "..", ".incoming", "../escape", `a\b`, "a\n.txt", strings.Repeat("x", 256)} {
+		if validCampaignUploadName(name) {
+			t.Errorf("accepted unsafe upload name %q", name)
+		}
+	}
+}
+
 func TestUploadHelperRemovalPreservesForeignContainer(t *testing.T) {
 	spec := uploadVolumeSpec()
 	spec.UploadVolume = true

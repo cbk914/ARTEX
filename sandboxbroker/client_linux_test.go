@@ -63,7 +63,7 @@ func TestUnixClientRoundTripAndFailClosed(t *testing.T) {
 	}
 	upload := []byte("synthetic upload")
 	hash := sha256.Sum256(upload)
-	if err := client.PutUpload(context.Background(), handle, "fixture.txt", strings.NewReader(string(upload)), int64(len(upload)), hex.EncodeToString(hash[:])); err != nil {
+	if err := client.PutUpload(context.Background(), handle, "análisis final.txt", strings.NewReader(string(upload)), int64(len(upload)), hex.EncodeToString(hash[:])); err != nil {
 		t.Fatalf("stream upload: %v", err)
 	}
 	engine.failure = "command-exit"

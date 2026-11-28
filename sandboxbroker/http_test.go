@@ -192,7 +192,7 @@ func TestBrokerHTTPUploadAdmissionAndDigest(t *testing.T) {
 		{path, "application/octet-stream", "bad", int64(len(body))},
 		{path, "application/octet-stream", want, 0},
 		{path, "application/octet-stream", want, maxCampaignUploadBytes + 1},
-		{"/v1/sandboxes/" + handle + "/uploads/-bad", "application/octet-stream", want, int64(len(body))},
+		{"/v1/sandboxes/" + handle + "/uploads/.incoming", "application/octet-stream", want, int64(len(body))},
 	} {
 		if got := put(tc.path, tc.contentType, tc.hash, tc.size); got.Code != http.StatusBadRequest {
 			t.Errorf("accepted invalid upload: %d", got.Code)

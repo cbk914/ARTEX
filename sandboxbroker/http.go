@@ -136,7 +136,7 @@ func newHTTPHandler(broker *Broker) (http.Handler, error) {
 	mux.HandleFunc("PUT /v1/sandboxes/{handle}/uploads/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		digest := r.Header.Get("X-Artex-SHA256")
-		if !validArtifactName(name) || r.Header.Get("Content-Type") != "application/octet-stream" || r.ContentLength <= 0 || r.ContentLength > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
+		if !validCampaignUploadName(name) || r.Header.Get("Content-Type") != "application/octet-stream" || r.ContentLength <= 0 || r.ContentLength > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
 			writeBrokerError(w, http.StatusBadRequest, "invalid campaign upload")
 			return
 		}

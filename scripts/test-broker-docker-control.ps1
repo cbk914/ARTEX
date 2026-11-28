@@ -154,6 +154,13 @@ try {
     if ($uploadRead.output -ne 'upload-private') { throw 'published upload unreadable or writable by executor' }
     $uploadOther = Invoke-Broker 'POST' "/v1/sandboxes/$($second.handle)/run" '{"command":"test ! -e /campaign/main/uploads/fixture.txt && printf upload-isolated"}' | ConvertFrom-Json
     if ($uploadOther.output -ne 'upload-isolated') { throw 'other campaign saw the published upload' }
+    $unicodeName = 'análisis final.txt'
+    $unicodePath = [Uri]::EscapeDataString($unicodeName)
+    $unicodeResult = Invoke-Broker 'PUT' "/v1/sandboxes/$($first.handle)/uploads/$unicodePath" $uploadPayload 'application/octet-stream' $uploadHash | ConvertFrom-Json
+    if ($unicodeResult.sha256 -ne $uploadHash) { throw 'Unicode upload digest mismatch' }
+    $unicodeCommand = @{ command = "grep -qx UPLOAD_A '/campaign/main/uploads/$unicodeName' && printf unicode-private" } | ConvertTo-Json -Compress
+    $unicodeRead = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" $unicodeCommand | ConvertFrom-Json
+    if ($unicodeRead.output -ne 'unicode-private') { throw 'Unicode upload name was not preserved' }
     docker run --rm --pull=never --network none --user 0:0 `
         --mount "type=volume,src=$socketVolume,dst=/run/artex-broker" `
         --tmpfs /app/data:rw,nosuid,nodev,noexec,size=1m `

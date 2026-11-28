@@ -9,12 +9,26 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const maxCampaignUploadBytes = 512 << 20
 const uploadHelperLabel = "org.artex.sandbox.helper"
 
 var uploadDigest = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+func validCampaignUploadName(name string) bool {
+	if name == "" || len(name) > 255 || name == "." || name == ".." || name == ".incoming" || !utf8.ValidString(name) || strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
 
 func uploadHelperName(spec Spec) (string, error) {
 	name, err := uploadVolumeName(spec)
@@ -72,7 +86,7 @@ rm "$1"`
 // running sandbox sees the same volume read-only. The helper publishes only
 // after exact length and SHA-256 checks; a partial stage stays root-private.
 func (d *DockerEngine) PutUpload(ctx context.Context, spec Spec, name string, input io.Reader, size int64, digest string) error {
-	if !spec.UploadVolume || !validArtifactName(name) || input == nil || size <= 0 || size > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
+	if !spec.UploadVolume || !validCampaignUploadName(name) || input == nil || size <= 0 || size > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
 		return errors.New("invalid campaign upload")
 	}
 	if err := d.CheckImage(ctx, spec.Image); err != nil {
