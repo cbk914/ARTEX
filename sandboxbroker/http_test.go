@@ -190,7 +190,7 @@ func TestBrokerHTTPUploadAdmissionAndDigest(t *testing.T) {
 	}{
 		{path, "application/json", want, int64(len(body))},
 		{path, "application/octet-stream", "bad", int64(len(body))},
-		{path, "application/octet-stream", want, 0},
+		{path, "application/octet-stream", want, -1},
 		{path, "application/octet-stream", want, maxCampaignUploadBytes + 1},
 		{"/v1/sandboxes/" + handle + "/uploads/.incoming", "application/octet-stream", want, int64(len(body))},
 	} {
@@ -204,6 +204,15 @@ func TestBrokerHTTPUploadAdmissionAndDigest(t *testing.T) {
 	got := put(path, "application/octet-stream", want, int64(len(body)))
 	if got.Code != http.StatusCreated || !bytes.Contains(got.Body.Bytes(), []byte(want)) || engine.uploadsDelivered != 1 {
 		t.Fatalf("valid upload rejected: %d %s delivered=%d", got.Code, got.Body.String(), engine.uploadsDelivered)
+	}
+	empty := sha256.Sum256(nil)
+	emptyRequest := httptest.NewRequest(http.MethodPut, "/v1/sandboxes/"+handle+"/uploads/empty.txt", bytes.NewReader(nil))
+	emptyRequest.Header.Set("Content-Type", "application/octet-stream")
+	emptyRequest.Header.Set("X-Artex-SHA256", fmt.Sprintf("%x", empty))
+	emptyResponse := httptest.NewRecorder()
+	handler.ServeHTTP(emptyResponse, emptyRequest)
+	if emptyResponse.Code != http.StatusCreated || engine.uploadsDelivered != 2 {
+		t.Fatalf("empty upload rejected: %d delivered=%d", emptyResponse.Code, engine.uploadsDelivered)
 	}
 }
 

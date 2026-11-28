@@ -66,6 +66,13 @@ func TestUnixClientRoundTripAndFailClosed(t *testing.T) {
 	if err := client.PutUpload(context.Background(), handle, "análisis final.txt", strings.NewReader(string(upload)), int64(len(upload)), hex.EncodeToString(hash[:])); err != nil {
 		t.Fatalf("stream upload: %v", err)
 	}
+	emptyHash := sha256.Sum256(nil)
+	if err := client.PutUpload(context.Background(), handle, "empty.txt", strings.NewReader(""), 0, hex.EncodeToString(emptyHash[:])); err != nil {
+		t.Fatalf("empty upload: %v", err)
+	}
+	if err := client.PutUpload(context.Background(), handle, "invalid-empty.txt", strings.NewReader("unexpected"), 0, hex.EncodeToString(emptyHash[:])); err == nil {
+		t.Fatal("accepted nonempty source declared as empty")
+	}
 	engine.failure = "command-exit"
 	output, err = client.Run(context.Background(), handle, "exit 7")
 	var exit *CommandExitError

@@ -54,6 +54,23 @@ func TestDockerUploadRejectsMalformedRequestBeforeDocker(t *testing.T) {
 	}
 }
 
+func TestDockerUploadAllowsEmptyFileWithExactDigest(t *testing.T) {
+	spec := uploadVolumeSpec()
+	spec.UploadVolume = true
+	empty := sha256.Sum256(nil)
+	r := &recordingRunner{responses: map[string][]byte{
+		"image":          jsonArray(t, map[string]any{"Id": testImage}),
+		"volume inspect": uploadVolumeInspect(t, spec, map[string]string{ownershipLabel: spec.Token, ownerLabel: spec.Owner}),
+	}}
+	d := &DockerEngine{runner: r}
+	if err := d.PutUpload(context.Background(), spec, "empty.txt", bytes.NewReader(nil), 0, fmt.Sprintf("%x", empty)); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.input) != 0 || !contains(r.calls[2], "0") {
+		t.Fatalf("empty upload did not reach fixed helper: %v", r.calls)
+	}
+}
+
 func TestCampaignUploadNamePreservesUnicodeWithoutPathEscape(t *testing.T) {
 	for _, name := range []string{"report.txt", "análisis final.pdf", "résumé (1).txt", ".notes"} {
 		if !validCampaignUploadName(name) {

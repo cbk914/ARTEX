@@ -150,12 +150,22 @@ func (c *Client) PutArtifact(ctx context.Context, handle, name string, data []by
 // PutUpload streams an already authorized attachment without buffering it in
 // the client. The broker verifies its exact length and digest before publish.
 func (c *Client) PutUpload(ctx context.Context, handle, name string, input io.Reader, size int64, digest string) error {
-	if !ownershipToken.MatchString(handle) || !validCampaignUploadName(name) || input == nil || size <= 0 || size > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
+	if !ownershipToken.MatchString(handle) || !validCampaignUploadName(name) || input == nil || size < 0 || size > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
 		return errors.New("invalid broker upload request")
+	}
+	var body io.Reader = io.LimitReader(input, size+1)
+	if size == 0 {
+		empty := sha256.Sum256(nil)
+		var probe [1]byte
+		n, readErr := input.Read(probe[:])
+		if digest != hex.EncodeToString(empty[:]) || n != 0 || readErr != io.EOF {
+			return errors.New("invalid empty broker upload")
+		}
+		body = bytes.NewReader(nil)
 	}
 	putCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	request, err := http.NewRequestWithContext(putCtx, http.MethodPut, "http://broker/v1/sandboxes/"+handle+"/uploads/"+url.PathEscape(name), io.LimitReader(input, size+1))
+	request, err := http.NewRequestWithContext(putCtx, http.MethodPut, "http://broker/v1/sandboxes/"+handle+"/uploads/"+url.PathEscape(name), body)
 	if err != nil {
 		return errors.New("invalid broker upload request")
 	}

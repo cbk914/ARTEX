@@ -377,7 +377,7 @@ func (b *Broker) PutArtifact(ctx context.Context, handle, name string, data []by
 // read-only upload mount. A caller must authorize the task before using its
 // opaque handle; the broker serializes publication with sandbox operations.
 func (b *Broker) PutUpload(ctx context.Context, handle, name string, input io.Reader, size int64, digest string) error {
-	if !validCampaignUploadName(name) || input == nil || size <= 0 || size > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
+	if !validCampaignUploadName(name) || input == nil || size < 0 || size > maxCampaignUploadBytes || !uploadDigest.MatchString(digest) {
 		return errors.New("invalid campaign upload")
 	}
 	s, err := b.lockSandbox(handle)

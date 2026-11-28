@@ -163,6 +163,21 @@ try {
     $unicodeCommand = @{ command = "grep -qx UPLOAD_A '/campaign/main/uploads/$unicodeName' && printf unicode-private" } | ConvertTo-Json -Compress
     $unicodeRead = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" $unicodeCommand | ConvertFrom-Json
     if ($unicodeRead.output -ne 'unicode-private') { throw 'Unicode upload name was not preserved' }
+    $emptyHash = ([Security.Cryptography.SHA256]::Create().ComputeHash([byte[]]@()) |
+        ForEach-Object { $_.ToString('x2') }) -join ''
+    $emptyStatus = docker run --rm --pull=never --network none --user 0:0 `
+        --mount "type=volume,src=$socketVolume,dst=/run/artex-broker" `
+        --tmpfs /app/data:rw,nosuid,nodev,noexec,size=1m `
+        --tmpfs /app/keys:rw,nosuid,nodev,noexec,size=1m `
+        --entrypoint curl $SandboxImage --silent --show-error --unix-socket $socket `
+        --output /dev/null --write-out '%{http_code}' --request PUT `
+        --header 'Content-Type: application/octet-stream' `
+        --header "X-Artex-SHA256: $emptyHash" --data-binary '' `
+        "http://broker/v1/sandboxes/$($first.handle)/uploads/empty.txt"
+    Assert-Exit 'stream synthetic empty upload'
+    if ($emptyStatus -ne '201') { throw "empty upload rejected (HTTP $emptyStatus)" }
+    $emptyRead = Invoke-Broker 'POST' "/v1/sandboxes/$($first.handle)/run" '{"command":"test -f /campaign/main/uploads/empty.txt && test ! -s /campaign/main/uploads/empty.txt && printf empty-private"}' | ConvertFrom-Json
+    if ($emptyRead.output -ne 'empty-private') { throw 'empty attachment was not published' }
     docker run --rm --pull=never --network none --user 0:0 `
         --mount "type=volume,src=$socketVolume,dst=/run/artex-broker" `
         --tmpfs /app/data:rw,nosuid,nodev,noexec,size=1m `
