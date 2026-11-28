@@ -41,25 +41,25 @@ func TestSandboxFileHelperConfinesExistingToolSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeInput, _ := json.Marshal(map[string]any{"file_path": filepath.Join(hostDir, "report.txt"), "content": "campaign-private"})
-	got := callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "Write", Input: writeInput, WorkingDir: hostDir, MaxOutputChars: 30000})
+	got := callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "Write", Input: writeInput, WorkingDir: hostDir, SandboxDir: "main", MaxOutputChars: 30000})
 	if got.IsError || !strings.Contains(got.Text, "Created") {
 		t.Fatalf("write: %+v", got)
 	}
-	if data, err := os.ReadFile(filepath.Join(root, "report.txt")); err != nil || string(data) != "campaign-private" {
+	if data, err := os.ReadFile(filepath.Join(root, "main", "report.txt")); err != nil || string(data) != "campaign-private" {
 		t.Fatalf("private file: %q, %v", data, err)
 	}
 	readInput, _ := json.Marshal(map[string]any{"file_path": filepath.Join(hostDir, "report.txt")})
-	got = callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "Read", Input: readInput, WorkingDir: hostDir, MaxOutputChars: 30000})
+	got = callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "Read", Input: readInput, WorkingDir: hostDir, SandboxDir: "main", MaxOutputChars: 30000})
 	if got.IsError || !strings.Contains(got.Text, "campaign-private") {
 		t.Fatalf("read: %+v", got)
 	}
-	aliasInput, _ := json.Marshal(map[string]any{"file_path": filepath.Join(root, "report.txt")})
-	got = callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "Read", Input: aliasInput, WorkingDir: hostDir, MaxOutputChars: 30000})
+	aliasInput, _ := json.Marshal(map[string]any{"file_path": filepath.Join(root, "main", "report.txt")})
+	got = callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "Read", Input: aliasInput, WorkingDir: hostDir, SandboxDir: "main", MaxOutputChars: 30000})
 	if got.IsError || !strings.Contains(got.Text, "campaign-private") {
 		t.Fatalf("sandbox path alias: %+v", got)
 	}
 	outsideInput, _ := json.Marshal(map[string]any{"file_path": outside})
-	got = callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "Read", Input: outsideInput, WorkingDir: hostDir, MaxOutputChars: 30000})
+	got = callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "Read", Input: outsideInput, WorkingDir: hostDir, SandboxDir: "main", MaxOutputChars: 30000})
 	if !got.IsError || !strings.Contains(got.Text, "outside") {
 		t.Fatalf("outside read was admitted: %+v", got)
 	}
@@ -67,19 +67,49 @@ func TestSandboxFileHelperConfinesExistingToolSemantics(t *testing.T) {
 		t.Fatalf("outside sentinel changed: %q, %v", data, err)
 	}
 	for i := 0; i < 12; i++ {
-		name := filepath.Join(root, fmt.Sprintf("private-%02d.txt", i))
+		name := filepath.Join(root, "main", fmt.Sprintf("private-%02d.txt", i))
 		if err := os.WriteFile(name, []byte("fixture"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	listInput, _ := json.Marshal(map[string]any{"path": hostDir})
-	got = callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "LS", Input: listInput, WorkingDir: hostDir, MaxOutputChars: 50})
+	got = callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "LS", Input: listInput, WorkingDir: hostDir, SandboxDir: "main", MaxOutputChars: 50})
 	if got.IsError || !strings.Contains(got.Text, "<persisted-output>") {
 		t.Fatalf("private output did not spill: %+v", got)
 	}
-	spills, err := os.ReadDir(filepath.Join(root, ".artex-output"))
+	spills, err := os.ReadDir(filepath.Join(root, "main", ".artex-output"))
 	if err != nil || len(spills) != 1 {
 		t.Fatalf("private output spill missing: %v, %v", spills, err)
+	}
+}
+
+func TestSandboxFileHelperKeepsRunDirectoriesDistinct(t *testing.T) {
+	root := t.TempDir()
+	mainDir := filepath.Join(t.TempDir(), "tasks", "7", "main")
+	workerDir := filepath.Join(filepath.Dir(mainDir), "i3")
+	for _, item := range []struct {
+		hostDir, sandboxDir, content string
+	}{{mainDir, "main", "main-private"}, {workerDir, "i3", "worker-private"}} {
+		input, _ := json.Marshal(map[string]any{"file_path": filepath.Join(item.hostDir, "same.txt"), "content": item.content})
+		got := callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "Write", Input: input, WorkingDir: item.hostDir, SandboxDir: item.sandboxDir, MaxOutputChars: 30000})
+		if got.IsError {
+			t.Fatalf("%s write: %+v", item.sandboxDir, got)
+		}
+		if data, err := os.ReadFile(filepath.Join(root, item.sandboxDir, "same.txt")); err != nil || string(data) != item.content {
+			t.Fatalf("%s file: %q, %v", item.sandboxDir, data, err)
+		}
+	}
+	input, _ := json.Marshal(map[string]any{"file_path": filepath.Join(root, "main", "same.txt")})
+	got := callSandboxFileHelper(t, root, SandboxFileToolRequest{Name: "Read", Input: input, WorkingDir: workerDir, SandboxDir: "i3", MaxOutputChars: 30000})
+	if !got.IsError {
+		t.Fatalf("worker file tool crossed its run directory: %+v", got)
+	}
+	for _, unsafe := range []string{"", "..", "i0", "i-1", "main/other", "/campaign/main"} {
+		var out bytes.Buffer
+		request, _ := json.Marshal(SandboxFileToolRequest{Name: "Read", Input: json.RawMessage(`{"file_path":"same.txt"}`), WorkingDir: mainDir, SandboxDir: unsafe, MaxOutputChars: 30000})
+		if err := runSandboxFileToolAtRoot(context.Background(), root, bytes.NewReader(request), &out); err == nil {
+			t.Fatalf("accepted unsafe sandbox directory %q", unsafe)
+		}
 	}
 }
 

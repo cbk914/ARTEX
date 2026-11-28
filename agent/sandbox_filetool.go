@@ -23,6 +23,7 @@ type SandboxFileToolRequest struct {
 	Name           string          `json:"name"`
 	Input          json.RawMessage `json:"input"`
 	WorkingDir     string          `json:"working_dir"`
+	SandboxDir     string          `json:"sandbox_dir"`
 	MaxOutputChars int             `json:"max_output_chars"`
 }
 
@@ -78,14 +79,26 @@ func runSandboxFileToolAtRoot(ctx context.Context, rootPath string, input io.Rea
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return errors.New("sandbox file request has trailing data")
 	}
-	if !filepath.IsAbs(req.WorkingDir) || req.MaxOutputChars < 1 || req.MaxOutputChars > 512<<10 {
+	if !filepath.IsAbs(req.WorkingDir) || req.MaxOutputChars < 1 || req.MaxOutputChars > 512<<10 || !validSandboxRunDir(req.SandboxDir) {
 		return errors.New("invalid sandbox file context")
 	}
 	run := confinedFileToolNames[req.Name]
 	if run == nil {
 		return errors.New("unknown sandbox file tool")
 	}
-	root, err := os.OpenRoot(rootPath)
+	base, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return err
+	}
+	defer base.Close()
+	if err := base.Mkdir(req.SandboxDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	info, err := base.Lstat(req.SandboxDir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("sandbox run directory is unsafe")
+	}
+	root, err := base.OpenRoot(req.SandboxDir)
 	if err != nil {
 		return err
 	}
@@ -97,8 +110,9 @@ func runSandboxFileToolAtRoot(ctx context.Context, rootPath string, input io.Rea
 	if err != nil || !spillDir.IsDir() || spillDir.Mode()&os.ModeSymlink != 0 {
 		return errors.New("private sandbox output directory is unsafe")
 	}
-	w := &workRoot{Root: root, dir: req.WorkingDir, sandboxAlias: rootPath}
-	tc := &actool.ToolContext{WorkingDir: req.WorkingDir, MaxOutputChars: req.MaxOutputChars, OutputDir: filepath.Join(rootPath, ".artex-output")}
+	sandboxPath := filepath.Join(rootPath, req.SandboxDir)
+	w := &workRoot{Root: root, dir: req.WorkingDir, sandboxAlias: sandboxPath}
+	tc := &actool.ToolContext{WorkingDir: req.WorkingDir, MaxOutputChars: req.MaxOutputChars, OutputDir: filepath.Join(sandboxPath, ".artex-output")}
 	result, err := run(w, req.Input, tc)
 	if err != nil {
 		return err
@@ -107,4 +121,19 @@ func runSandboxFileToolAtRoot(ctx context.Context, rootPath string, input io.Rea
 		result = actool.Text(actool.Capture(tc, result.Flatten()))
 	}
 	return json.NewEncoder(output).Encode(SandboxFileToolResponse{Text: result.Flatten(), IsError: result.IsError})
+}
+
+func validSandboxRunDir(name string) bool {
+	if name == "main" {
+		return true
+	}
+	if len(name) < 2 || name[0] != 'i' || name[1] < '1' || name[1] > '9' {
+		return false
+	}
+	for i := 2; i < len(name); i++ {
+		if name[i] < '0' || name[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

@@ -256,11 +256,43 @@ func (c *taskSandboxController) retireCreated(entry *taskSandboxEntry) error {
 }
 
 func (c *taskSandboxController) Run(ctx context.Context, info agent.RunInfo, command string) (string, error) {
-	return c.operate(ctx, info, func(handle string) (string, error) { return c.broker.Run(ctx, handle, command) })
+	wrapped, err := taskSandboxCommand(info, command)
+	if err != nil {
+		return "", err
+	}
+	return c.operate(ctx, info, func(handle string) (string, error) { return c.broker.Run(ctx, handle, wrapped) })
 }
 
 func (c *taskSandboxController) RunInput(ctx context.Context, info agent.RunInfo, command string, input []byte) (string, error) {
-	return c.operate(ctx, info, func(handle string) (string, error) { return c.broker.RunInput(ctx, handle, command, input) })
+	wrapped, err := taskSandboxCommand(info, command)
+	if err != nil {
+		return "", err
+	}
+	return c.operate(ctx, info, func(handle string) (string, error) { return c.broker.RunInput(ctx, handle, wrapped, input) })
+}
+
+func taskSandboxRunDir(info agent.RunInfo) (string, error) {
+	if info.IntentID < 0 {
+		return "", errors.New("invalid task sandbox intent")
+	}
+	if info.IntentID == 0 {
+		return "main", nil
+	}
+	return "i" + strconv.FormatInt(info.IntentID, 10), nil
+}
+
+func taskSandboxCommand(info agent.RunInfo, command string) (string, error) {
+	if command == "" {
+		return "", errors.New("empty task sandbox command")
+	}
+	dir, err := taskSandboxRunDir(info)
+	if err != nil {
+		return "", err
+	}
+	path := "/campaign/" + dir
+	// Keep the caller's shell operators inside a child shell. Otherwise a
+	// command containing "||" could run from /campaign after mkdir/cd fails.
+	return "mkdir -p " + path + " && cd " + path + " && /bin/sh -c " + shellQuote(command), nil
 }
 
 func (c *taskSandboxController) PutArtifact(ctx context.Context, info agent.RunInfo, name string, data []byte) (string, error) {
@@ -288,6 +320,11 @@ func (c *taskSandboxController) RunFileTool(ctx context.Context, info agent.RunI
 	if req.Name == "" || len(req.Input) == 0 || req.WorkingDir == "" || req.MaxOutputChars < 1 {
 		return actool.Result{}, errors.New("invalid task sandbox file request")
 	}
+	dir, err := taskSandboxRunDir(info)
+	if err != nil {
+		return actool.Result{}, err
+	}
+	req.SandboxDir = dir
 	if req.MaxOutputChars > 512<<10 {
 		req.MaxOutputChars = 512 << 10
 	}

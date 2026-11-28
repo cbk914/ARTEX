@@ -49,11 +49,11 @@ type sandboxBackendRecorder struct {
 type sandboxFileBackend struct{ *sandboxBackendRecorder }
 
 func (b *sandboxFileBackend) RunInput(_ context.Context, handle, command string, input []byte) (string, error) {
-	if command != agent.SandboxFileToolCommand || handle != "handle-7" {
+	if command != "mkdir -p /campaign/main && cd /campaign/main && /bin/sh -c '/app/artex __artex-sandbox-filetool'" || handle != "handle-7" {
 		return "", errors.New("unexpected sandbox file command")
 	}
 	var req agent.SandboxFileToolRequest
-	if err := json.Unmarshal(input, &req); err != nil || req.Name != "Read" {
+	if err := json.Unmarshal(input, &req); err != nil || req.Name != "Read" || req.SandboxDir != "main" {
 		return "", errors.New("invalid sandbox file request")
 	}
 	return `{"text":"private file result","is_error":false}`, nil
@@ -292,7 +292,7 @@ func TestTaskSandboxRetriesFailedRetirementBeforeReuse(t *testing.T) {
 	}
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	if backend.created[7] != 2 || len(backend.removed) != 1 || len(backend.ran) != 1 || backend.ran[0] != "handle-7:third" {
+	if backend.created[7] != 2 || len(backend.removed) != 1 || len(backend.ran) != 1 || backend.ran[0] != "handle-7:mkdir -p /campaign/main && cd /campaign/main && /bin/sh -c 'third'" {
 		t.Fatalf("retirement retry did not create a fresh sandbox: creates=%v removed=%v runs=%v", backend.created, backend.removed, backend.ran)
 	}
 }
@@ -423,6 +423,25 @@ func TestTaskSandboxFileToolBindsVerifiedTask(t *testing.T) {
 	defer backend.mu.Unlock()
 	if backend.created[7] != 1 {
 		t.Fatalf("unexpected sandbox creation: %v", backend.created)
+	}
+}
+
+func TestTaskSandboxCommandsUseIntentWorkingDirectory(t *testing.T) {
+	c, _, backend, _ := newSandboxTestController(t)
+	info := agent.RunInfo{TaskID: 7, ExplorationID: 70, IntentID: 3}
+	if _, err := c.Run(context.Background(), info, "pwd"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RunInput(context.Background(), info, "cat", []byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.ran) != 2 || backend.ran[0] != "handle-7:mkdir -p /campaign/i3 && cd /campaign/i3 && /bin/sh -c 'pwd'" || backend.ran[1] != "handle-7:mkdir -p /campaign/i3 && cd /campaign/i3 && /bin/sh -c 'cat':payload" {
+		t.Fatalf("wrong worker directory: %v", backend.ran)
+	}
+	if _, err := taskSandboxCommand(agent.RunInfo{IntentID: -1}, "pwd"); err == nil {
+		t.Fatal("negative intent selected a sandbox directory")
 	}
 }
 

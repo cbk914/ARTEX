@@ -20,7 +20,7 @@ func TestCommandToolUsesAuthorizedTaskSandbox(t *testing.T) {
 	}
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	if len(backend.ran) != 1 || backend.ran[0] != "handle-7:printf sandbox" {
+	if len(backend.ran) != 1 || backend.ran[0] != "handle-7:mkdir -p /campaign/main && cd /campaign/main && /bin/sh -c 'printf sandbox'" {
 		t.Fatalf("command reached wrong executor: %v", backend.ran)
 	}
 }

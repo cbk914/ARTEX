@@ -1,6 +1,6 @@
 # ADR 0002: Campaign execution boundary
 
-Status: proposed, with a host-side lifecycle prototype. No runtime migration or deployment has occurred.
+Status: proposed, with a host-side lifecycle prototype and conditional task-tool routing. The controller is not installed at startup; no operational migration or deployment has occurred.
 
 ## Decision context
 
@@ -85,3 +85,9 @@ The control plane retains keys, database credentials, archive staging and eviden
 5. Enable the new boundary only after Bash, planner/worker, chat, custom tools, file tools, MCP and browser tests pass. Unsupported hosts and missing isolation features must fail closed, with an explicit operator-visible readiness error.
 
 Changing only the global UID/GID, working directory or environment variables cannot satisfy this boundary. Until the broker is implemented and validated, ARTEX-001 and ARTEX-005 remain open and cross-campaign confidentiality and integrity must not be claimed.
+
+## Current staged routing
+
+Task Bash, custom command/Python and confined file tools can call the controller when it is explicitly installed by a trusted server. The controller verifies the live task and exploration before each broker operation. Main/planner commands use `/campaign/main`; worker commands use `/campaign/i<intentID>`. The file-tool helper opens the matching private run directory, while long Bash output is stored as a random immutable artifact inside the same sandbox. These run directories preserve the agents' working-directory semantics; they do not create a separate security boundary between agents of the same campaign.
+
+The controller remains absent from startup because attachments, other SDK output spills, chat, MCP, interactive sessions, network authorization and durable artifact handling have not been migrated. The operational shared executor therefore remains exposed to the original cross-campaign risk. A broker fixture and conditional unit tests cannot close ARTEX-001 or ARTEX-005 without the remaining routes and end-to-end acceptance.
