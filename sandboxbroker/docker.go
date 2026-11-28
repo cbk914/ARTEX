@@ -141,7 +141,44 @@ type imageInfo struct {
 	RepoDigests []string `json:"RepoDigests"`
 	Config      struct {
 		Volumes map[string]json.RawMessage `json:"Volumes"`
+		Env     []string                   `json:"Env"`
 	} `json:"Config"`
+}
+
+// Docker inherits image ENV entries even when Create supplies a private HOME.
+// Keep this list tied to the reviewed, digest-pinned ARTEX executor image.
+// A new image variable must be reviewed before it can reach a campaign.
+var sandboxImageEnvironment = map[string]string{
+	"PATH":                 "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	"LANG":                 "C.UTF-8",
+	"GPG_KEY":              "7169605F62C751356D054A26A821E680E5FA6305",
+	"PYTHON_VERSION":       "3.12.16",
+	"PYTHON_SHA256":        "b5796915dc45ff745cfb4e990a7e7c93d6f546328a102ce31448d69ebc37575c",
+	"NUCLEI_TEMPLATES_DIR": "/opt/nuclei-templates",
+	"DISABLE_NUCLEI_TEMPLATES_PUBLIC_DOWNLOAD": "true",
+	"PLAYWRIGHT_BROWSERS_PATH":                 "/root/.cache/ms-playwright",
+}
+
+var sandboxPrivateEnvironment = map[string]string{
+	"HOME": "/campaign", "TMPDIR": "/tmp", "XDG_CONFIG_HOME": "/campaign/.config",
+	"XDG_CACHE_HOME": "/campaign/.cache", "XDG_DATA_HOME": "/campaign/.local/share",
+	"XDG_STATE_HOME": "/campaign/.local/state", "XDG_RUNTIME_DIR": "/campaign/.run",
+}
+
+func validateImageEnvironment(entries []string) error {
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || seen[key] {
+			return errors.New("image has malformed or duplicate environment")
+		}
+		seen[key] = true
+		want, allowed := sandboxImageEnvironment[key]
+		if !allowed || value != want {
+			return fmt.Errorf("image environment %q is not approved", key)
+		}
+	}
+	return nil
 }
 
 func decodeOne[T any](data []byte) (T, error) {
@@ -180,6 +217,9 @@ func (d *DockerEngine) CheckImage(ctx context.Context, image string) error {
 		if path != "/app/data" && path != "/app/keys" {
 			return fmt.Errorf("unapproved image volume %q", path)
 		}
+	}
+	if err := validateImageEnvironment(info.Config.Env); err != nil {
+		return err
 	}
 	return nil
 }
@@ -406,12 +446,18 @@ func (d *DockerEngine) verify(ctx context.Context, id string, spec Spec, require
 			return fmt.Errorf("sandbox has duplicate environment key %q", key)
 		}
 		env[key] = value
+		if want, private := sandboxPrivateEnvironment[key]; private {
+			if value != want {
+				return fmt.Errorf("sandbox environment %q violates private path policy", key)
+			}
+		} else {
+			want, allowed := sandboxImageEnvironment[key]
+			if !allowed || value != want {
+				return fmt.Errorf("sandbox environment %q is not approved", key)
+			}
+		}
 	}
-	for key, want := range map[string]string{
-		"HOME": "/campaign", "TMPDIR": "/tmp", "XDG_CONFIG_HOME": "/campaign/.config",
-		"XDG_CACHE_HOME": "/campaign/.cache", "XDG_DATA_HOME": "/campaign/.local/share",
-		"XDG_STATE_HOME": "/campaign/.local/state", "XDG_RUNTIME_DIR": "/campaign/.run",
-	} {
+	for key, want := range sandboxPrivateEnvironment {
 		if env[key] != want {
 			return fmt.Errorf("sandbox environment %s violates private path policy", key)
 		}

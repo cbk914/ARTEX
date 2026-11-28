@@ -1,7 +1,8 @@
 param(
     [string]$BrokerImage = 'artex-galactus:broker-validation-20261127',
     [string]$SandboxImage = 'artex:local',
-    [switch]$FileToolSmoke
+    [switch]$FileToolSmoke,
+    [switch]$RejectImageEnvironment
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,6 +78,26 @@ try {
         Start-Sleep -Milliseconds 200
     }
     if (-not $ready) { docker logs $brokerName; throw 'broker socket did not appear' }
+
+    if ($RejectImageEnvironment) {
+        $status = docker run --rm --pull=never --network none --user 0:0 `
+            --mount "type=volume,src=$socketVolume,dst=/run/artex-broker" `
+            --tmpfs /app/data:rw,nosuid,nodev,noexec,size=1m `
+            --tmpfs /app/keys:rw,nosuid,nodev,noexec,size=1m `
+            --entrypoint curl $SandboxImage --silent --show-error --unix-socket $socket `
+            --output /dev/null --write-out '%{http_code}' --request POST `
+            --header 'Content-Type: application/json' --data-binary '{"campaign_id":71}' `
+            'http://broker/v1/sandboxes'
+        Assert-Exit 'request sandbox from unreviewed image'
+        if ($status -ne '503' -or @(NewSandboxIDs $baseline).Count -ne 0) {
+            throw "unreviewed image environment was not rejected safely (HTTP $status)"
+        }
+        docker stop --time=80 $brokerName | Out-Null
+        Assert-Exit 'stop broker after rejected image'
+        $brokerCreated = $false
+        Write-Output 'PASS: broker rejected an unreviewed image environment without creating a sandbox.'
+        return
+    }
 
     $first = Invoke-Broker 'POST' '/v1/sandboxes' '{"campaign_id":71}' | ConvertFrom-Json
     if ($first.handle.Length -ne 64) { throw 'first campaign lacked an opaque handle' }

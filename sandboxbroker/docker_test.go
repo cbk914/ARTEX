@@ -136,6 +136,27 @@ func TestDockerRejectsUnexpectedImageVolume(t *testing.T) {
 	}
 }
 
+func TestDockerRejectsUnreviewedImageEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+	}{
+		{"synthetic credential", []string{"PATH=" + sandboxImageEnvironment["PATH"], "CANARY_SECRET=synthetic"}},
+		{"changed approved value", []string{"PATH=/synthetic/bin"}},
+		{"duplicate", []string{"LANG=C.UTF-8", "LANG=C.UTF-8"}},
+		{"private override", []string{"HOME=/shared"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &recordingRunner{responses: map[string][]byte{"image": jsonArray(t, map[string]any{
+				"Id": testImage, "Config": map[string]any{"Env": tc.env},
+			})}}
+			if err := (&DockerEngine{runner: r}).CheckImage(context.Background(), testImage); err == nil {
+				t.Fatal("accepted unreviewed image environment")
+			}
+		})
+	}
+}
+
 func TestDockerCreateNameConflictDoesNotRemoveForeignContainer(t *testing.T) {
 	id := strings.Repeat("e", 64)
 	spec := Spec{Name: "artex-campaign-" + strings.Repeat("b", 32), Image: testImage, Token: strings.Repeat("c", 64), Owner: strings.Repeat("f", 32)}
@@ -220,6 +241,12 @@ func TestDockerRejectsUnapprovedMountAndNetwork(t *testing.T) {
 		t.Fatal("accepted shared XDG cache")
 	}
 	config["Env"] = []string{"HOME=/campaign", "TMPDIR=/tmp", "XDG_CONFIG_HOME=/campaign/.config", "XDG_CACHE_HOME=/campaign/.cache", "XDG_DATA_HOME=/campaign/.local/share", "XDG_STATE_HOME=/campaign/.local/state", "XDG_RUNTIME_DIR=/campaign/.run"}
+	config["Env"] = append(config["Env"].([]string), "CANARY_SECRET=synthetic")
+	r.responses["inspect"] = jsonArray(t, base)
+	if err := d.Verify(context.Background(), id, spec); err == nil {
+		t.Fatal("accepted unreviewed container environment")
+	}
+	config["Env"] = config["Env"].([]string)[:7]
 	host := base["HostConfig"].(map[string]any)
 	for _, tc := range []struct {
 		name  string
