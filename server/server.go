@@ -4445,6 +4445,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var attachmentBaseDir string
+	var attachmentRoot *os.Root
 	if len(req.Attachments) > 0 {
 		taskID, err := strconv.ParseInt(t.ID, 10, 64)
 		if err != nil {
@@ -4452,7 +4453,13 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		attachmentBaseDir = agent.EnsureRunDir(s.m.dir, taskID, 0)
-		canonical, err := validateChatAttachments(r.Context(), attachmentBaseDir, req.Attachments)
+		attachmentRoot, err = openTaskRunRoot(s.m.dir, taskID)
+		if err != nil {
+			writeErr(w, 400, "invalid or changed attachment directory")
+			return
+		}
+		defer attachmentRoot.Close()
+		canonical, err := validateChatAttachmentsRoot(r.Context(), attachmentRoot, req.Attachments)
 		if err != nil {
 			writeErr(w, 400, "invalid or changed attachment")
 			return
@@ -4514,7 +4521,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(req.Attachments) != 0 {
 			info := agent.RunInfo{TaskID: maTaskID, ExplorationID: t.ExpID, Interactive: true}
-			if err := s.taskSandboxes.transferTaskChatAttachments(r.Context(), info, attachmentBaseDir, req.Attachments); err != nil {
+			if err := s.taskSandboxes.transferTaskChatAttachmentsRoot(r.Context(), info, attachmentRoot, req.Attachments); err != nil {
 				if releaseErr := releaseInteractive(); releaseErr != nil {
 					log.Printf("[task-sandbox] failed attachment turn cleanup task=%s: %v", t.ID, releaseErr)
 				}

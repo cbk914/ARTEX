@@ -66,7 +66,12 @@ func TestTaskChatAttachmentTransferUsesTaskHandle(t *testing.T) {
 		t.Fatal(err)
 	}
 	info := agent.RunInfo{TaskID: 7, ExplorationID: 70, Interactive: true}
-	if err := c.transferTaskChatAttachments(ctx, info, base, attachments); err != nil {
+	baseRoot, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer baseRoot.Close()
+	if err := c.transferTaskChatAttachmentsRoot(ctx, info, baseRoot, attachments); err != nil {
 		t.Fatal(err)
 	}
 	backend.mu.Lock()
@@ -101,15 +106,20 @@ func TestTaskChatAttachmentTransferRejectsChangedAndUnsupportedFiles(t *testing.
 		t.Fatal(err)
 	}
 	info := agent.RunInfo{TaskID: 7, ExplorationID: 70, Interactive: true}
+	baseRoot, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer baseRoot.Close()
 	if err := os.WriteFile(path, []byte("changed"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.transferTaskChatAttachments(ctx, info, base, attachments); err == nil {
+	if err := c.transferTaskChatAttachmentsRoot(ctx, info, baseRoot, attachments); err == nil {
 		t.Fatal("changed attachment transferred")
 	}
 	attachments[0].Name = "bad\nname"
 	attachments[0].Path = "uploads/bad\nname"
-	if err := c.transferTaskChatAttachments(ctx, info, base, attachments); err == nil {
+	if err := c.transferTaskChatAttachmentsRoot(ctx, info, baseRoot, attachments); err == nil {
 		t.Fatal("unsupported attachment name transferred")
 	}
 	backend.mu.Lock()

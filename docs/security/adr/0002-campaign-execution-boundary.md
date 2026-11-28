@@ -1,6 +1,6 @@
 # ADR 0002: Campaign execution boundary
 
-Status: proposed, with a host-side lifecycle prototype and conditional task-tool routing. The controller is not installed at startup; no operational migration or deployment has occurred.
+Status: proposed, with a host-side lifecycle prototype and conditional task-tool and attachment routing. The controller is not installed at startup; no operational migration or deployment has occurred.
 
 ## Decision context
 
@@ -92,4 +92,4 @@ Task Bash, custom command/Python and confined file tools can call the controller
 
 Docker also inherits environment variables baked into the selected image. The broker now admits only reviewed, exact image variables and rejects a running sandbox with an extra or changed variable. A new pinned image must update this list deliberately after review. This does not provide per-operation credential injection; no production credential should be baked into an executor image.
 
-The controller remains absent from startup because attachments, other SDK output spills, chat, MCP, interactive sessions, network authorization and durable artifact handling have not been migrated. The operational shared executor therefore remains exposed to the original cross-campaign risk. A broker fixture and conditional unit tests cannot close ARTEX-001 or ARTEX-005 without the remaining routes and end-to-end acceptance.
+Task chat has a conditional interactive lease for paused or terminal turns. Its validated attachments can be transferred into the campaign's private, read-only upload volume through a task-bound broker handle. Task upload and chat validation pin the fixed `tasks/<id>/main` ancestry below the data root. These routes have focused source and broker-fixture tests, but the controller remains absent from startup because top-level chat, MCP, interactive sessions, other SDK output spills, network authorization and durable artifact handling have not been migrated. The operational shared executor therefore remains exposed to the original cross-campaign risk. A broker fixture and conditional unit tests cannot close ARTEX-001 or ARTEX-005 without the remaining routes and end-to-end acceptance.

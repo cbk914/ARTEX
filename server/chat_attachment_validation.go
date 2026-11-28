@@ -21,17 +21,21 @@ const maxChatAttachmentsPerMessage = 1024
 // The run-directory file remains mutable until protected artifact delivery is
 // implemented, so this is an admission check rather than an immutability claim.
 func validateChatAttachments(ctx context.Context, baseDir string, attachments []chatAttachment) ([]chatAttachment, error) {
+	baseRoot, err := os.OpenRoot(baseDir)
+	if err != nil {
+		return nil, err
+	}
+	defer baseRoot.Close()
+	return validateChatAttachmentsRoot(ctx, baseRoot, attachments)
+}
+
+func validateChatAttachmentsRoot(ctx context.Context, baseRoot *os.Root, attachments []chatAttachment) ([]chatAttachment, error) {
 	if len(attachments) == 0 {
 		return nil, nil
 	}
 	if len(attachments) > maxChatAttachmentsPerMessage {
 		return nil, errors.New("too many attachments")
 	}
-	baseRoot, err := os.OpenRoot(baseDir)
-	if err != nil {
-		return nil, err
-	}
-	defer baseRoot.Close()
 	selectedDir, err := baseRoot.Lstat("uploads")
 	if err != nil || !selectedDir.IsDir() {
 		return nil, errors.New("upload directory is unavailable or unsafe")
@@ -103,7 +107,7 @@ func validateChatAttachments(ctx context.Context, baseDir string, attachments []
 // transferTaskChatAttachments reopens the server-validated files through an
 // os.Root and sends their bytes to the campaign's read-only upload volume.
 // The broker independently checks length and digest before publication.
-func (c *taskSandboxController) transferTaskChatAttachments(ctx context.Context, info agent.RunInfo, baseDir string, attachments []chatAttachment) error {
+func (c *taskSandboxController) transferTaskChatAttachmentsRoot(ctx context.Context, info agent.RunInfo, baseRoot *os.Root, attachments []chatAttachment) error {
 	if len(attachments) == 0 {
 		return nil
 	}
@@ -112,11 +116,6 @@ func (c *taskSandboxController) transferTaskChatAttachments(ctx context.Context,
 			return errors.New("attachment is incompatible with campaign upload storage")
 		}
 	}
-	baseRoot, err := os.OpenRoot(baseDir)
-	if err != nil {
-		return err
-	}
-	defer baseRoot.Close()
 	selectedDir, err := baseRoot.Lstat("uploads")
 	if err != nil || !selectedDir.IsDir() {
 		return errors.New("upload directory is unavailable or unsafe")

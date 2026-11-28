@@ -115,6 +115,7 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { <-s.uploadSlots }()
 	base := filepath.Join(s.m.dir, sub, id) // the directory uploads/ goes in
+	var taskID int64
 	if taskScoped {
 		t := s.m.ResolveTask(id)
 		if t == nil {
@@ -126,7 +127,7 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer s.engine.decInflight(id)
-		taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+		taskID, _ = strconv.ParseInt(t.ID, 10, 64)
 		base = agent.EnsureRunDir(s.m.dir, taskID, 0)
 	} else if sub == "sessions" {
 		base = agent.EnsureSessionDir(s.m.dir, id)
@@ -144,9 +145,15 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	dir := filepath.Join(base, "uploads")
-	// The run directory is the smallest trusted root. A link inside uploads
-	// cannot lead to a sibling campaign, even if it stays under the data dir.
-	root, err := os.OpenRoot(base)
+	// Task uploads pin each run-directory ancestor below the data root. A link
+	// inside uploads cannot lead to a sibling campaign.
+	var root *os.Root
+	var err error
+	if taskScoped {
+		root, err = openTaskRunRoot(s.m.dir, taskID)
+	} else {
+		root, err = os.OpenRoot(base)
+	}
 	if err != nil {
 		writeErr(w, 500, "failed to open upload root")
 		return
